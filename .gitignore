@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+profile.json
+session_log.jsonl
+.env
