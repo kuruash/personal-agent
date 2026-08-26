@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Personal Agent (Phase 0)",
-  "version": "0.0.1",
-  "description": "Phase 0 plumbing: side panel -> content script -> local FastAPI -> Ollama.",
+  "name": "Personal Agent (Phase 1)",
+  "version": "0.1.0",
+  "description": "Tool-calling loop: article Q&A + YouTube transcript summarization, routed by the model.",
   "permissions": ["sidePanel", "activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1:8000/*"],
   "background": {

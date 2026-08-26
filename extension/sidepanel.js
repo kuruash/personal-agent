@@ -12,7 +12,11 @@ askBtn.addEventListener("click", async () => {
   try {
     const resp = await chrome.runtime.sendMessage({ type: "ASK", question });
     if (!resp?.ok) throw new Error(resp?.error ?? "Unknown error.");
-    statusEl.textContent = resp.title ? `Source: ${resp.title}` : "";
+    const tools = (resp.trace ?? []).map((t) => t.tool).join(" -> ");
+    statusEl.textContent = [
+      resp.title ? `Source: ${resp.title}` : "",
+      tools ? `Tools: ${tools}` : "Tools: (none)",
+    ].filter(Boolean).join(" · ");
     answerEl.textContent = resp.answer ?? "(empty response)";
   } catch (e) {
     statusEl.textContent = "";
