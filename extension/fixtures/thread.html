@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Fixture: Gmail thread (synthetic)</title>
+</head>
+<body>
+  <!-- Synthetic Gmail-thread DOM. Class names mirror what real Gmail uses so
+       the same extractGmailThread() runs against both this fixture and a live
+       inbox. If real Gmail changes any of these classes, this fixture will
+       silently keep working while production breaks — fix by opening a real
+       thread, capturing DOM, and updating the fixture to match. -->
+  <h2 class="hP">Q3 roadmap review — draft agenda</h2>
+
+  <div class="adn">
+    <span class="gD" name="Priya Rao" email="priya@example.com">Priya Rao</span>
+    <span class="g3" title="Mon, Aug 24, 2026 9:12 AM">Mon, Aug 24 9:12 AM</span>
+    <div class="a3s aiL">
+      Hi all,<br><br>
+      I put together a first-cut agenda for the Q3 roadmap review next week.
+      Attaching the doc. Main open questions I'd like us to close on Friday:
+      (1) do we ship the ingest rewrite before or after the mobile launch,
+      and (2) how aggressive do we get with the deprecation timeline for the
+      legacy dashboard?<br><br>
+      Would love your thoughts before Thursday EOD.<br><br>
+      Priya
+    </div>
+  </div>
+
+  <div class="adn">
+    <span class="gD" name="Marcus Lee" email="marcus@example.com">Marcus Lee</span>
+    <span class="g3" title="Mon, Aug 24, 2026 2:41 PM">Mon, Aug 24 2:41 PM</span>
+    <div class="a3s aiL">
+      Thanks Priya. On (1), strong preference for ingest-first — the mobile
+      team is already blocked on the new event schema and pushing the
+      rewrite out again is going to bite us. On (2), I think 6 months is too
+      generous, we've been telling customers "soon" since spring.<br><br>
+      Marcus
+    </div>
+  </div>
+
+  <div class="adn">
+    <span class="gD" name="Ashish Kurumeti" email="ashish@example.com">Ashish Kurumeti</span>
+    <span class="g3" title="Tue, Aug 25, 2026 8:03 AM">Tue, Aug 25 8:03 AM</span>
+    <div class="a3s aiL">
+      Agree with Marcus on ingest-first. On the deprecation, I'd want to see
+      the top-10-customers usage numbers before committing to a timeline —
+      Sam pulled those last quarter, worth a refresh.<br><br>
+      Also can we add a 15 min slot for the alerting overhaul? It's been
+      sliding.
+    </div>
+  </div>
+
+  <div class="adn">
+    <span class="gD" name="Priya Rao" email="priya@example.com">Priya Rao</span>
+    <span class="g3" title="Tue, Aug 25, 2026 4:22 PM">Tue, Aug 25 4:22 PM</span>
+    <div class="a3s aiL">
+      Great, thanks both. Ashish — can you own pulling the refreshed usage
+      numbers and sending them out before Friday? And yes, I'll add the
+      alerting slot. Updated agenda going out tomorrow AM.
+    </div>
+  </div>
+</body>
+</html>

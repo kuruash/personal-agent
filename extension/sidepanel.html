@@ -5,13 +5,22 @@
     <title>Personal Agent</title>
     <style>
       body { font: 14px system-ui, sans-serif; margin: 12px; }
-      textarea { width: 100%; box-sizing: border-box; }
+      textarea { width: 100%; box-sizing: border-box; font: inherit; }
       button { margin-top: 8px; padding: 6px 12px; }
       #answer {
         margin-top: 12px; padding: 8px; border: 1px solid #ddd;
         border-radius: 4px; white-space: pre-wrap; min-height: 60px;
       }
       #status { color: #888; font-size: 12px; margin-top: 4px; }
+      #draft-area { display: none; margin-top: 16px; padding: 10px;
+        border: 2px solid #f5b301; border-radius: 4px; background: #fffbea; }
+      #draft-area h3 { margin: 0 0 6px; font-size: 13px; }
+      #draft-area .note { font-size: 12px; color: #6b5300; margin: 4px 0 8px; }
+      #draft-body { min-height: 140px; }
+      #draft-buttons { display: flex; gap: 8px; }
+      #insert-btn { background: #f5b301; border: none; color: #000; font-weight: 600; }
+      #reject-btn { background: #eee; border: 1px solid #ccc; }
+      #draft-error { color: #b00020; font-size: 12px; margin-top: 6px; display: none; }
     </style>
   </head>
   <body>
@@ -20,6 +29,21 @@
     <button id="ask">Ask</button>
     <div id="status"></div>
     <div id="answer"></div>
+
+    <div id="draft-area">
+      <h3>Draft reply — pending your review</h3>
+      <div class="note">
+        Edit as needed. Nothing is inserted or sent until you click
+        <b>Insert into compose box</b>. Sending stays a manual action in Gmail.
+      </div>
+      <textarea id="draft-body" rows="10"></textarea>
+      <div id="draft-buttons">
+        <button id="insert-btn">Insert into compose box</button>
+        <button id="reject-btn">Reject</button>
+      </div>
+      <div id="draft-error"></div>
+    </div>
+
     <script src="sidepanel.js"></script>
   </body>
 </html>

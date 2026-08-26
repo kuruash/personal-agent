@@ -1,5 +1,7 @@
 // Background service worker: side panel ASK -> content script context bundle
 // -> POST /ask (server runs the tool-calling loop) -> answer back to panel.
+// Also relays INSERT_DRAFT (panel -> active tab's gmail.js) — the only path
+// through which a draft ever touches the DOM. Nothing else auto-inserts.
 
 const SERVER_URL = "http://127.0.0.1:8000/ask";
 
@@ -8,11 +10,18 @@ chrome.sidePanel
   .catch((err) => console.warn("setPanelBehavior failed:", err));
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== "ASK") return;
-  handleAsk(msg.question).then(sendResponse).catch((err) => {
-    sendResponse({ ok: false, error: String(err?.message ?? err) });
-  });
-  return true;
+  if (msg?.type === "ASK") {
+    handleAsk(msg.question)
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message ?? err) }));
+    return true;
+  }
+  if (msg?.type === "INSERT_DRAFT") {
+    relayInsertDraft(msg.text ?? "")
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message ?? err) }));
+    return true;
+  }
 });
 
 async function handleAsk(question) {
@@ -29,6 +38,7 @@ async function handleAsk(question) {
     is_youtube: !!ctx.is_youtube,
     video_id: ctx.video_id ?? null,
     transcript: ctx.transcript ?? null,
+    email_thread: ctx.email_thread ?? null,
   };
 
   const res = await fetch(SERVER_URL, {
@@ -38,7 +48,20 @@ async function handleAsk(question) {
   });
   if (!res.ok) throw new Error(`Server ${res.status}: ${await res.text()}`);
   const data = await res.json();
-  return { ok: true, answer: data.answer, trace: data.trace, title: ctx.title };
+  return {
+    ok: true,
+    answer: data.answer,
+    trace: data.trace,
+    title: ctx.title,
+    requires_confirmation: !!data.requires_confirmation,
+    draft: data.draft ?? null,
+  };
+}
+
+async function relayInsertDraft(text) {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) return { ok: false, error: "No active tab." };
+  return await sendToTab(tab.id, { type: "INSERT_DRAFT", text });
 }
 
 function sendToTab(tabId, message) {

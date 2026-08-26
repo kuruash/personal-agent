@@ -6,3 +6,4 @@ session_log.jsonl
 .env
 
 CLAUDE.md
+server/memory.db

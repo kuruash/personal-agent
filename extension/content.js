@@ -1,15 +1,28 @@
 // Content script: on request, return a context bundle for the active tab.
-// - Non-YouTube: selection (if any) or document.body.innerText, as in Phase 0.
-// - youtube.com/watch: video_id + parsed caption track from
-//   ytInitialPlayerResponse. If captions aren't available, transcript is null;
-//   the server surfaces that as "no transcript available" rather than guessing.
+// - Non-YouTube, non-Gmail: selection (if any) or document.body.innerText.
+// - youtube.com/watch: video_id + parsed caption track (see Phase 1).
+// - mail.google.com: attach extracted email_thread via extractGmailThread()
+//   from gmail.js (loaded alongside this script by the manifest).
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type !== "GET_PAGE_CONTEXT") return;
-  buildContext()
-    .then((ctx) => sendResponse({ ok: true, ...ctx }))
-    .catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
-  return true; // async
+  if (msg?.type === "GET_PAGE_CONTEXT") {
+    buildContext()
+      .then((ctx) => sendResponse({ ok: true, ...ctx }))
+      .catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
+    return true;
+  }
+  if (msg?.type === "INSERT_DRAFT") {
+    try {
+      // insertIntoOpenCompose is provided by gmail.js.
+      const result = (typeof insertIntoOpenCompose === "function")
+        ? insertIntoOpenCompose(msg.text ?? "")
+        : { ok: false, error: "gmail.js not loaded on this page." };
+      sendResponse(result);
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e?.message ?? e) });
+    }
+    return true;
+  }
 });
 
 async function buildContext() {
@@ -17,6 +30,21 @@ async function buildContext() {
   const title = document.title;
   const isYoutube =
     location.hostname.endsWith("youtube.com") && location.pathname === "/watch";
+  const isGmail = location.hostname === "mail.google.com";
+
+  if (isGmail) {
+    const email_thread =
+      typeof extractGmailThread === "function" ? extractGmailThread() : null;
+    return {
+      url,
+      title,
+      page_text: "",
+      is_youtube: false,
+      video_id: null,
+      transcript: null,
+      email_thread,
+    };
+  }
 
   if (!isYoutube) {
     const selection = window.getSelection()?.toString() ?? "";
@@ -29,6 +57,7 @@ async function buildContext() {
       is_youtube: false,
       video_id: null,
       transcript: null,
+      email_thread: null,
     };
   }
 
@@ -41,6 +70,7 @@ async function buildContext() {
     is_youtube: true,
     video_id,
     transcript,
+    email_thread: null,
   };
 }
 
@@ -51,13 +81,11 @@ async function tryGetYoutubeTranscript() {
       player?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
     if (!tracks.length) return null;
 
-    // Prefer an English track; otherwise take the first.
     const track =
       tracks.find((t) => (t.languageCode || "").toLowerCase().startsWith("en")) ||
       tracks[0];
     if (!track?.baseUrl) return null;
 
-    // Ask for JSON3 — easier to parse than the default XML.
     const url = track.baseUrl + (track.baseUrl.includes("fmt=") ? "" : "&fmt=json3");
     const res = await fetch(url, { credentials: "include" });
     if (!res.ok) return null;
@@ -75,9 +103,6 @@ async function tryGetYoutubeTranscript() {
 }
 
 function findPlayerResponse() {
-  // Fast path: YouTube leaves ytInitialPlayerResponse on window in some
-  // contexts, but content scripts run in an isolated world, so read from the
-  // inline scripts instead.
   const scripts = document.querySelectorAll("script");
   for (const s of scripts) {
     const src = s.textContent || "";
@@ -85,8 +110,6 @@ function findPlayerResponse() {
     const idx = src.indexOf(marker);
     if (idx === -1) continue;
     const start = idx + marker.length;
-    // Find the matching closing brace by walking depth. YouTube ends the
-    // object with `};` or `;var`, so a bounded scan is enough.
     let depth = 0, inStr = false, esc = false, end = -1;
     for (let i = start; i < src.length; i++) {
       const ch = src[i];

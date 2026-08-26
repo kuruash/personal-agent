@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Personal Agent (Phase 1)",
-  "version": "0.1.0",
-  "description": "Tool-calling loop: article Q&A + YouTube transcript summarization, routed by the model.",
+  "name": "Personal Agent (Phase 3)",
+  "version": "0.3.0",
+  "description": "Adds email drafting on Gmail with explicit confirmation before insertion.",
   "permissions": ["sidePanel", "activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1:8000/*"],
   "background": {
@@ -18,7 +18,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["gmail.js", "content.js"],
       "run_at": "document_idle"
     }
   ]
