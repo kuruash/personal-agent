@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Personal Agent</title>
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 12px; }
+      textarea { width: 100%; box-sizing: border-box; }
+      button { margin-top: 8px; padding: 6px 12px; }
+      #answer {
+        margin-top: 12px; padding: 8px; border: 1px solid #ddd;
+        border-radius: 4px; white-space: pre-wrap; min-height: 60px;
+      }
+      #status { color: #888; font-size: 12px; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <label for="q">Ask about this page</label>
+    <textarea id="q" rows="3" placeholder="What is this page about?"></textarea>
+    <button id="ask">Ask</button>
+    <div id="status"></div>
+    <div id="answer"></div>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>

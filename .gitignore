@@ -4,3 +4,5 @@ __pycache__/
 profile.json
 session_log.jsonl
 .env
+
+CLAUDE.md
