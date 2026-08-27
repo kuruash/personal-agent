@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 
 import asyncio
 import json
+import os
 
 import httpx
 from langfuse import get_client, observe
@@ -29,6 +30,75 @@ from .profile import (
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 MODEL = "qwen2.5:7b"
+
+# Keep the model resident between requests so the second /ask in a session
+# doesn't pay the ~5-15s load penalty again. Configurable via env so it can
+# be dialed down on machines with less RAM. Ollama accepts "-1" for indefinite,
+# "0" for evict-immediately, or a duration string like "30m" / "1h".
+OLLAMA_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
+
+
+def ollama_perf_metadata(data: dict) -> dict:
+    """Extract Ollama's per-call performance counters into a flat dict for
+    Langfuse generation spans. Splits the total latency into load / prefill /
+    generate so a slow request can be diagnosed without adding a second tool.
+
+    Ollama emits `*_duration` fields in nanoseconds and `*_count` fields in
+    tokens. Tokens/sec is derived here so the UI shows it without expression
+    support.
+    """
+    total = data.get("total_duration") or 0
+    load = data.get("load_duration") or 0
+    pe_dur = data.get("prompt_eval_duration") or 0
+    ev_dur = data.get("eval_duration") or 0
+    pe_count = data.get("prompt_eval_count") or 0
+    ev_count = data.get("eval_count") or 0
+    md: dict = {
+        "total_duration_ns": total,
+        "load_duration_ns": load,
+        "prompt_eval_duration_ns": pe_dur,
+        "eval_duration_ns": ev_dur,
+        "prompt_eval_count": pe_count,
+        "eval_count": ev_count,
+        "done_reason": data.get("done_reason"),
+    }
+    # Human-readable derived rates. Guard against divide-by-zero — a cached
+    # response with prompt_eval_duration=0 is legitimate.
+    if pe_dur > 0:
+        md["prompt_tokens_per_sec"] = round(pe_count * 1e9 / pe_dur, 1)
+    if ev_dur > 0:
+        md["eval_tokens_per_sec"] = round(ev_count * 1e9 / ev_dur, 1)
+    return md
+
+
+def semantic_form_view(fields: list[dict]) -> list[dict]:
+    """Minimal LLM-facing projection of a detect_form_fields plan.
+
+    Strips selector, tag, aria attrs, and other DOM identifiers — the model
+    only sees the question + available option labels + the mapper's
+    conclusion. Full metadata stays in the panel-facing draft.
+
+    Not currently on the hot path: the fast route and terminal detect flow
+    skip Qwen entirely for form-fill, so this projection is unused today.
+    Kept as the documented shape for any future tool that needs to expose
+    field data back to the model without leaking DOM internals.
+    """
+    out: list[dict] = []
+    for f in fields:
+        item: dict = {
+            "label": f.get("label"),
+            "confidence": f.get("confidence"),
+        }
+        if f.get("profile_key"):
+            item["profile_key"] = f["profile_key"]
+        if f.get("value") is not None:
+            item["proposed_value"] = f["value"]
+        if f.get("options"):
+            item["options"] = [
+                (o.get("text") or o.get("value") or "") for o in f["options"]
+            ]
+        out.append(item)
+    return out
 
 MAX_PAGE_CHARS = 12000
 CHUNK_CHARS = 1500
@@ -660,7 +730,12 @@ async def _ollama_generate(prompt: str) -> str:
     async with httpx.AsyncClient(timeout=180.0) as client:
         r = await client.post(
             OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False},
+            json={
+                "model": MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+            },
         )
         r.raise_for_status()
         data = r.json()
@@ -673,9 +748,6 @@ async def _ollama_generate(prompt: str) -> str:
             "input": data.get("prompt_eval_count", 0),
             "output": data.get("eval_count", 0),
         },
-        metadata={
-            "total_duration_ns": data.get("total_duration"),
-            "eval_duration_ns": data.get("eval_duration"),
-        },
+        metadata=ollama_perf_metadata(data),
     )
     return response

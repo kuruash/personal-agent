@@ -10,6 +10,7 @@ no extra embedding model is loaded into memory.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -22,6 +23,10 @@ from langfuse import get_client, observe
 DB_PATH = Path(__file__).parent / "memory.db"
 EMBED_MODEL = "nomic-embed-text"
 OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embeddings"
+
+# Same env var as server/tools.py — read here separately so this module has
+# no cross-module dependency on tools.py (would be a cycle: tools -> memory).
+_EMBED_KEEP_ALIVE = os.environ.get("OLLAMA_KEEP_ALIVE", "30m")
 
 # Cosine threshold. Nomic embeddings sit high for related content; below this
 # the match is usually noise. Keep silent-skip behavior when nothing clears it.
@@ -51,7 +56,12 @@ def _connect() -> sqlite3.Connection:
 async def embed(text: str) -> np.ndarray:
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
-            OLLAMA_EMBED_URL, json={"model": EMBED_MODEL, "prompt": text}
+            OLLAMA_EMBED_URL,
+            json={
+                "model": EMBED_MODEL,
+                "prompt": text,
+                "keep_alive": _EMBED_KEEP_ALIVE,
+            },
         )
         r.raise_for_status()
         vec = np.array(r.json()["embedding"], dtype=np.float32)

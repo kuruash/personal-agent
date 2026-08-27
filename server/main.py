@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,10 @@ from .memory import (  # noqa: E402
 from .tools import (  # noqa: E402
     IMPLS,
     MODEL,
+    OLLAMA_KEEP_ALIVE,
     TOOLS,
     Context,
+    ollama_perf_metadata,
     ollama_tool_specs,
     tool_by_name,
 )
@@ -67,6 +70,61 @@ SYSTEM_PROMPT = (
     "themselves. Do not call fill_form_field per field in a loop; only call "
     "fill_form_field if the user has singled out one specific field to fill."
 )
+
+# ---------- fast intent router ----------
+#
+# For high-confidence obvious commands we skip Ollama entirely and dispatch
+# straight to the target tool. Each entry is:
+#   patterns  — compiled regexes matched against the trimmed lowercased
+#               question. Kept narrow: anything that isn't unambiguously
+#               "run this tool" should fall through to the ReAct path.
+#   tool      — name of the tool in IMPLS to invoke directly.
+#   applies   — cheap predicate on the request context; if False, this intent
+#               can't apply this turn (e.g. no form on the page).
+#   answer_fn — builds the static answer string from the tool result. Never
+#               calls the model; the panel does the real UX rendering.
+#
+# Add new intents by appending to FAST_INTENTS. No matcher-code changes.
+_FILL_FORM_PATTERNS = [
+    re.compile(r"^\s*(please\s+)?fill\s+(this|the)\s+(form|application|page)\s*[.!?]*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(please\s+)?fill\s+(it|this|the\s+form|the\s+application)\s+out\s*[.!?]*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(please\s+)?autofill(\s+(this|the))?(\s+(form|application|page))?\s*[.!?]*\s*$", re.IGNORECASE),
+    re.compile(r"^\s*(please\s+)?auto[- ]?fill\s+(this|the)\s+(form|application|page)\s*[.!?]*\s*$", re.IGNORECASE),
+]
+
+
+def _fill_form_answer(fields: list[dict]) -> str:
+    n = len(fields)
+    if n == 0:
+        return "No fillable form fields detected on the current tab."
+    return (
+        f"Detected {n} form field(s). Review each below before anything is written."
+    )
+
+
+FAST_INTENTS: list[dict[str, Any]] = [
+    {
+        "name": "form_fill",
+        "patterns": _FILL_FORM_PATTERNS,
+        "tool": "detect_form_fields",
+        "applies": lambda ctx: bool(ctx.form_fields),
+        "answer_fn": _fill_form_answer,
+    },
+]
+
+
+def _match_fast_intent(question: str, ctx: Context) -> dict[str, Any] | None:
+    q = (question or "").strip()
+    if not q:
+        return None
+    for intent in FAST_INTENTS:
+        if not intent["applies"](ctx):
+            continue
+        for pat in intent["patterns"]:
+            if pat.match(q):
+                return intent
+    return None
+
 
 app = FastAPI()
 
@@ -107,6 +165,55 @@ async def ask(req: AskRequest) -> dict[str, Any]:
     )
     ctx = Context(**req.context.model_dump())
 
+    trace: list[dict[str, Any]] = []
+    answer = "Reached tool-call limit without a final answer."
+    requires_confirmation = False
+    draft: dict[str, Any] | None = None
+
+    # ---- fast-intent router ----
+    # For unambiguous commands we skip the ReAct loop entirely — no chat
+    # call, no recall (fast intents are deterministic; there's no ambiguity
+    # for memory to disambiguate). The tool executes directly and the same
+    # response contract is built in Python.
+    intent = _match_fast_intent(req.question, ctx)
+    if intent is not None:
+        lf.update_current_span(metadata={"fast_intent": intent["name"]})
+        name = intent["tool"]
+        spec = tool_by_name(name) or {}
+        with lf.start_as_current_observation(
+            name=f"tool:{name}",
+            as_type="tool",
+            input={},
+            metadata={
+                "tool_name": name,
+                "side_effecting": spec.get("side_effecting", False),
+                "requires_confirmation": spec.get("requires_confirmation", False),
+                "via": "fast_intent",
+            },
+        ) as tool_span:
+            result = await IMPLS[name]({}, ctx)
+            tool_span.update(output=result)
+        trace.append({"tool": name, "chars": len(result), "fast_intent": intent["name"]})
+        parsed = _safe_json(result)
+        fields = parsed.get("fields") if isinstance(parsed, dict) else None
+        if fields:
+            draft = {"type": "form_fill", "fields": fields}
+        answer = intent["answer_fn"](fields or [])
+
+        tools_used = [name]
+        await log_interaction(ctx.url, ctx.title, req.question, answer, tools_used)
+        lf.update_current_span(
+            output={"answer": answer, "requires_confirmation": False},
+            metadata={"tools_used": tools_used, "trace": trace, "path": "fast"},
+        )
+        return {
+            "answer": answer,
+            "trace": trace,
+            "requires_confirmation": False,
+            "draft": draft,
+        }
+
+    # ---- normal ReAct path ----
     # Retrieve on the question alone. Blending in the current tab title
     # biases recall toward the current tab and drowns out cross-session
     # references like "that pricing page I saw earlier".
@@ -120,7 +227,6 @@ async def ask(req: AskRequest) -> dict[str, Any]:
         messages.append({"role": "system", "content": memory_block})
     messages.append({"role": "user", "content": _user_message(req.question, ctx)})
 
-    trace: list[dict[str, Any]] = []
     if matches:
         trace.append({
             "recall": [
@@ -129,10 +235,6 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             ]
         })
     tool_error_retried = False
-
-    answer = "Reached tool-call limit without a final answer."
-    requires_confirmation = False
-    draft: dict[str, Any] | None = None
     async with httpx.AsyncClient(timeout=180.0) as client:
         for _ in range(MAX_ITERS):
             resp = await _chat(client, messages)
@@ -185,14 +287,22 @@ async def ask(req: AskRequest) -> dict[str, Any]:
 
             trace.append({"tool": name, "chars": len(result)})
 
-            if name == "detect_form_fields" and draft is None:
+            if name == "detect_form_fields":
+                # TERMINAL: the plan is what the panel renders. Sending the
+                # JSON back through a second /api/chat call just to have Qwen
+                # produce a natural-language wrapper is pure latency — the
+                # panel doesn't use that wrapper anyway. Break here and build
+                # the {answer, draft} response directly.
+                #
+                # Per-field writes still go through fill_form_field's
+                # requires_confirmation gate via the panel; this only skips
+                # a redundant model round-trip, not any safety check.
                 parsed = _safe_json(result)
                 fields = parsed.get("fields") if isinstance(parsed, dict) else None
-                if fields:
-                    # Surface the fill-plan so the panel can render a
-                    # field-by-field preview. Not a requires_confirmation
-                    # flow — the individual writes are the confirmation gate.
+                if fields and draft is None:
                     draft = {"type": "form_fill", "fields": fields}
+                answer = _fill_form_answer(fields or [])
+                break
             if spec.get("requires_confirmation"):
                 # Terminal state: the tool's output IS the artifact awaiting
                 # explicit human action. Do not let the model keep generating
@@ -264,6 +374,7 @@ async def _chat(client: httpx.AsyncClient, messages: list[dict]) -> dict:
             "messages": messages,
             "tools": ollama_tool_specs(),
             "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
         },
     )
     r.raise_for_status()
@@ -277,11 +388,7 @@ async def _chat(client: httpx.AsyncClient, messages: list[dict]) -> dict:
             "input": data.get("prompt_eval_count", 0),
             "output": data.get("eval_count", 0),
         },
-        metadata={
-            "total_duration_ns": data.get("total_duration"),
-            "eval_duration_ns": data.get("eval_duration"),
-            "done_reason": data.get("done_reason"),
-        },
+        metadata=ollama_perf_metadata(data),
     )
     return data
 
