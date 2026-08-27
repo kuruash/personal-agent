@@ -60,7 +60,12 @@ SYSTEM_PROMPT = (
     "current tab may be unrelated.\n"
     "2. Otherwise, if the question is about the current tab's content, call "
     "the appropriate tool.\n"
-    "3. Never invent content. If neither memory nor a tool can answer, say so."
+    "3. Never invent content. If neither memory nor a tool can answer, say so.\n"
+    "4. When the user asks to fill out, autofill, or apply on a page with a "
+    "form, call detect_form_fields ONCE and then stop — the panel renders "
+    "its output as a field-by-field preview and the user approves each field "
+    "themselves. Do not call fill_form_field per field in a loop; only call "
+    "fill_form_field if the user has singled out one specific field to fill."
 )
 
 app = FastAPI()
@@ -81,6 +86,7 @@ class ContextPayload(BaseModel):
     video_id: str | None = None
     transcript: list[dict] | None = None
     email_thread: dict | None = None
+    form_fields: list[dict] | None = None
 
 
 class AskRequest(BaseModel):
@@ -178,16 +184,43 @@ async def ask(req: AskRequest) -> dict[str, Any]:
                 tool_span.update(output=result)
 
             trace.append({"tool": name, "chars": len(result)})
+
+            if name == "detect_form_fields" and draft is None:
+                parsed = _safe_json(result)
+                fields = parsed.get("fields") if isinstance(parsed, dict) else None
+                if fields:
+                    # Surface the fill-plan so the panel can render a
+                    # field-by-field preview. Not a requires_confirmation
+                    # flow — the individual writes are the confirmation gate.
+                    draft = {"type": "form_fill", "fields": fields}
             if spec.get("requires_confirmation"):
                 # Terminal state: the tool's output IS the artifact awaiting
                 # explicit human action. Do not let the model keep generating
                 # or call other tools after producing a draft.
                 answer = result
                 requires_confirmation = True
-                draft = {
-                    "body": result,
-                    "thread_subject": (ctx.email_thread or {}).get("subject", ""),
-                }
+                if name == "fill_form_field":
+                    parsed = _safe_json(result)
+                    single = {
+                        "selector": parsed.get("selector"),
+                        "value": parsed.get("value"),
+                        "label": parsed.get("selector"),
+                        "confidence": "high",
+                        "source": "explicit fill_form_field call",
+                    }
+                    if isinstance(draft, dict) and draft.get("type") == "form_fill":
+                        # detect_form_fields already produced the full plan;
+                        # keep it and just note the model's per-field pick
+                        # rather than replacing the whole preview.
+                        pass
+                    else:
+                        draft = {"type": "form_fill", "fields": [single]}
+                else:
+                    draft = {
+                        "type": "email",
+                        "body": result,
+                        "thread_subject": (ctx.email_thread or {}).get("subject", ""),
+                    }
                 break
 
             messages.append({"role": "tool", "content": result})

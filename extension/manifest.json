@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Personal Agent (Phase 3)",
-  "version": "0.3.0",
-  "description": "Adds email drafting on Gmail with explicit confirmation before insertion.",
+  "name": "Personal Agent (Phase 4)",
+  "version": "0.4.0",
+  "description": "Adds form-field detection and per-field autofill with explicit confirmation before any write.",
   "permissions": ["sidePanel", "activeTab", "scripting"],
   "host_permissions": ["http://127.0.0.1:8000/*"],
   "background": {
@@ -18,7 +18,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["gmail.js", "content.js"],
+      "js": ["gmail.js", "formdetect.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

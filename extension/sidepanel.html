@@ -21,6 +21,37 @@
       #insert-btn { background: #f5b301; border: none; color: #000; font-weight: 600; }
       #reject-btn { background: #eee; border: 1px solid #ccc; }
       #draft-error { color: #b00020; font-size: 12px; margin-top: 6px; display: none; }
+      #form-area { display: none; margin-top: 16px; padding: 10px;
+        border: 2px solid #2b7cff; border-radius: 4px; background: #eef5ff; }
+      #form-area h3 { margin: 0 0 6px; font-size: 13px; }
+      #form-area .note { font-size: 12px; color: #123f7a; margin: 4px 0 8px; }
+      .field-row { border-top: 1px solid #cfe0ff; padding: 8px 0; }
+      .field-row .lbl { font-weight: 600; font-size: 13px; }
+      .field-row .meta { font-size: 11px; color: #555; margin-bottom: 4px; }
+      .field-row .conf-high { color: #0a7a2a; }
+      .field-row .conf-medium { color: #a06a00; }
+      .field-row .conf-low { color: #b00020; }
+      .field-row .conf-none { color: #b00020; font-style: italic; }
+      .field-row .conf-ambiguous { color: #8a5a00; font-weight: 700; }
+      .field-row .candidates { margin: 4px 0; }
+      .field-row .cand { display: block; padding: 4px 6px; margin: 2px 0;
+        border: 1px solid #e4c98c; border-radius: 3px; background: #fff8e6;
+        font-size: 12px; cursor: pointer; }
+      .field-row .cand input[type=radio] { margin-right: 6px; }
+      .field-row .cand-sim { color: #555; font-size: 11px; }
+      .field-row .cand-desc { color: #444; font-style: italic; }
+      .field-row .cand-val { color: #333; font-family: ui-monospace, monospace; }
+      .field-row input { width: 100%; box-sizing: border-box; padding: 4px 6px;
+        font: inherit; margin-bottom: 4px; }
+      .field-row .actions { display: flex; gap: 6px; }
+      .field-row button { padding: 3px 8px; margin-top: 0; font-size: 12px; }
+      .field-row .fill-btn { background: #2b7cff; color: #fff; border: none; }
+      .field-row .skip-btn { background: #eee; border: 1px solid #ccc; }
+      .field-row .status { font-size: 11px; margin-top: 3px; }
+      .field-row .status.ok { color: #0a7a2a; }
+      .field-row .status.err { color: #b00020; }
+      #form-bulk { margin-top: 8px; }
+      #approve-all-btn { background: #2b7cff; color: #fff; border: none; font-weight: 600; }
     </style>
   </head>
   <body>
@@ -29,6 +60,20 @@
     <button id="ask">Ask</button>
     <div id="status"></div>
     <div id="answer"></div>
+
+    <div id="form-area">
+      <h3>Form fill — field-by-field preview</h3>
+      <div class="note">
+        Nothing is written to the page until you click <b>Fill</b> on a row.
+        High-confidence rows come from your profile; low/none rows need your
+        input. This tool never submits the form.
+      </div>
+      <div id="form-fields"></div>
+      <div id="form-bulk">
+        <button id="approve-all-btn">Fill all high-confidence</button>
+        <button id="close-form-btn">Close</button>
+      </div>
+    </div>
 
     <div id="draft-area">
       <h3>Draft reply — pending your review</h3>

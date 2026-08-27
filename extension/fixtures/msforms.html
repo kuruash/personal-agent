@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" /><title>Microsoft Forms shape fixture</title></head>
+<body>
+  <!--
+    Mirrors the DOM shape seen on live Microsoft Forms as of testing:
+      * <input> carries a generic aria-label of "Single line text"
+        (describing the field TYPE, not the question).
+      * No <label for=>, no wrapping <label>, no placeholder with useful text.
+      * The actual question text lives in a *sibling* div wrapped by a
+        shared ancestor, class contains "text-format-content".
+    This is why the standard chain returns nothing usable and the
+    FALLBACK_LABEL_SELECTORS entry for "text-format-content" is needed.
+  -->
+  <div class="office-form-question">
+    <div class="question-title">
+      <div class="text-format-content">Full Name</div>
+    </div>
+    <div class="question-input">
+      <input type="text" aria-label="Single line text" data-automation-id="questionTextInput" />
+    </div>
+  </div>
+
+  <div class="office-form-question">
+    <div class="question-title">
+      <div class="text-format-content">What is the best email address to reach you?</div>
+    </div>
+    <div class="question-input">
+      <input type="text" aria-label="Single line text" />
+    </div>
+  </div>
+
+  <div class="office-form-question">
+    <div class="question-title">
+      <div class="text-format-content">Current employer</div>
+    </div>
+    <div class="question-input">
+      <input type="text" aria-label="Single line text" />
+    </div>
+  </div>
+
+  <div class="office-form-question">
+    <div class="question-title">
+      <div class="text-format-content">G Number</div>
+    </div>
+    <div class="question-input">
+      <input type="text" aria-label="Single line text" />
+    </div>
+  </div>
+</body>
+</html>

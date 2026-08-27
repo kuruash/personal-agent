@@ -1,0 +1,159 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Synthetic Job Application (Phase 4 fixture)</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 640px; margin: 24px auto; }
+    fieldset { margin-bottom: 16px; }
+    label { display: block; margin: 8px 0 2px; font-weight: 600; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px; font: inherit; }
+    .row { margin-bottom: 8px; }
+    .hint { font-size: 12px; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Apply — Widget Engineer</h1>
+  <p class="hint">Fixture form for the extension's form-field detector. Mix of stable
+  patterns (autocomplete-annotated basics) and deliberately ambiguous fields.</p>
+
+  <form name="application">
+    <fieldset>
+      <legend>Contact</legend>
+
+      <div class="row">
+        <label for="fn">First name</label>
+        <input id="fn" name="first_name" type="text" autocomplete="given-name" required />
+      </div>
+      <div class="row">
+        <label for="ln">Last name</label>
+        <input id="ln" name="last_name" type="text" autocomplete="family-name" required />
+      </div>
+      <div class="row">
+        <label for="em">Email</label>
+        <input id="em" name="email" type="email" autocomplete="email" required />
+      </div>
+      <div class="row">
+        <!-- Deliberately no autocomplete attr — must be identified via label/name. -->
+        <label for="ph">Phone number</label>
+        <input id="ph" name="phone" type="tel" placeholder="+1 555-555-5555" />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Address</legend>
+      <div class="row">
+        <label for="addr">Street address</label>
+        <input id="addr" name="street" type="text" autocomplete="street-address" />
+      </div>
+      <div class="row">
+        <label for="city">City</label>
+        <input id="city" name="city" type="text" autocomplete="address-level2" />
+      </div>
+      <div class="row">
+        <label for="st">State / region</label>
+        <input id="st" name="state" type="text" autocomplete="address-level1" />
+      </div>
+      <div class="row">
+        <label for="zip">Postal code</label>
+        <input id="zip" name="zip" type="text" autocomplete="postal-code" />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Links</legend>
+      <div class="row">
+        <label for="li">LinkedIn URL</label>
+        <input id="li" name="linkedin" type="url" placeholder="https://linkedin.com/in/..." />
+      </div>
+      <div class="row">
+        <label for="gh">GitHub URL</label>
+        <input id="gh" name="github" type="url" placeholder="https://github.com/..." />
+      </div>
+      <div class="row">
+        <!-- Deliberately ambiguous: could be portfolio OR company URL. Label
+             is the only signal; the mapper should surface low confidence. -->
+        <label for="site">Website</label>
+        <input id="site" name="website" type="url" />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Eligibility</legend>
+      <div class="row">
+        <label for="auth">Are you authorized to work in this country?</label>
+        <select id="auth" name="work_auth">
+          <option value="">-- select --</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="spons">Will you now or in the future require sponsorship?</label>
+        <select id="spons" name="sponsorship">
+          <option value="">-- select --</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="reloc">Willing to relocate?</label>
+        <select id="reloc" name="relocate">
+          <option value="">-- select --</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+          <option value="maybe">Open to discussion</option>
+        </select>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Compensation & timing</legend>
+      <div class="row">
+        <label for="sal">Salary expectation (USD)</label>
+        <input id="sal" name="salary" type="text" />
+      </div>
+      <div class="row">
+        <label for="notice">Notice period</label>
+        <input id="notice" name="notice" type="text" placeholder="e.g. 2 weeks" />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Adversarially-worded (fuzzy-match probes)</legend>
+      <!-- These deliberately use wording that does NOT appear literally in
+           any profile key. The exact-match mapper missed them; the embedding
+           mapper should catch them without over-firing on the truly
+           unrelated fields below. -->
+      <div class="row">
+        <label for="cur-co">Current company</label>
+        <input id="cur-co" name="employer_now" type="text" />
+      </div>
+      <div class="row">
+        <label for="gy">Grad year</label>
+        <input id="gy" name="finished_school" type="text" />
+      </div>
+      <div class="row">
+        <label for="reach">Best number to reach you</label>
+        <input id="reach" name="contact_number" type="text" />
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Free response</legend>
+      <div class="row">
+        <label for="why">Why do you want to work here?</label>
+        <!-- Deliberately open-ended. No profile key should match confidently. -->
+        <textarea id="why" name="why_us" rows="4"></textarea>
+      </div>
+      <div class="row">
+        <label for="hobbies">Tell us about a hobby.</label>
+        <!-- Deliberately unmatchable — should surface as "I don't have this". -->
+        <textarea id="hobbies" name="hobby" rows="3"></textarea>
+      </div>
+    </fieldset>
+
+    <button type="submit">Submit application</button>
+  </form>
+</body>
+</html>

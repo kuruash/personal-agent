@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" /><title>MS Forms radios + nested text-format-content fixture</title></head>
+<body>
+  <!--
+    Reproduces two real bugs seen on the live Microsoft Forms multi-page
+    application:
+
+    (a) NESTED text-format-content. The question wrapper carries the
+        text-format-content class AND contains inner text-format-content
+        descendants. Naive querySelector('[class*="text-format-content"]')
+        on the ancestor picks the OUTER element, whose textContent
+        concatenates the numbered heading + inner question + two "Single
+        line text" hint spans — the exact "8.What is your major?Single line
+        text. Single line text." shape we saw in the trace.
+
+    (b) RADIO GROUP with a shared name attribute where the question text
+        lives in a text-format-content ancestor and each radio has its own
+        <label> for the OPTION text. Naive per-input scan emits one field
+        per radio and treats the option label ("Freshman", "Sophomore", ...)
+        as the question label.
+  -->
+
+  <!-- Question 8 — text input, mangled-label reproduction -->
+  <div class="office-form-question question-8">
+    <div class="text-format-content question-title-container">
+      <div class="text-format-content">8. What is your major?</div>
+      <span class="input-type-hint">Single line text.</span>
+      <span class="input-type-hint">Single line text.</span>
+    </div>
+    <div class="question-input">
+      <input type="text" aria-label="Single line text" data-automation-id="q8" />
+    </div>
+  </div>
+
+  <!-- Radio group — class standing -->
+  <div class="office-form-question question-9">
+    <div class="text-format-content question-title-container">
+      <div class="text-format-content">9. What is your current class standing?</div>
+    </div>
+    <div class="question-input" role="radiogroup" aria-labelledby="q9-title">
+      <label><input type="radio" name="q9_class_standing" value="freshman" /> Freshman</label>
+      <label><input type="radio" name="q9_class_standing" value="sophomore" /> Sophomore</label>
+      <label><input type="radio" name="q9_class_standing" value="junior" /> Junior</label>
+      <label><input type="radio" name="q9_class_standing" value="senior" /> Senior</label>
+      <label><input type="radio" name="q9_class_standing" value="graduate" /> Graduate</label>
+    </div>
+  </div>
+
+  <!-- Radio group — schedule commitment (Yes/No). Profile HAS work_authorization
+       etc but nothing that means "can commit to schedule". Should resolve NONE. -->
+  <div class="office-form-question question-10">
+    <div class="text-format-content question-title-container">
+      <div class="text-format-content">10. Can you commit to the full schedule for this program?</div>
+    </div>
+    <div class="question-input" role="radiogroup">
+      <label><input type="radio" name="q10_commit" value="yes" /> Yes</label>
+      <label><input type="radio" name="q10_commit" value="no" /> No</label>
+    </div>
+  </div>
+
+  <!-- Radio group — college. This is the "wrong-value confident fill" bug.
+       Profile.university = "George Mason University". The question is about
+       WHICH COLLEGE within GMU. Options don't include the university name,
+       so a match here must NONE-out rather than substitute the value. -->
+  <div class="office-form-question question-11">
+    <div class="text-format-content question-title-container">
+      <div class="text-format-content">11. Which college are you affiliated with?</div>
+    </div>
+    <div class="question-input" role="radiogroup">
+      <label><input type="radio" name="q11_college" value="cec" /> College of Engineering and Computing</label>
+      <label><input type="radio" name="q11_college" value="cvpa" /> College of Visual and Performing Arts</label>
+      <label><input type="radio" name="q11_college" value="chss" /> College of Humanities and Social Sciences</label>
+      <label><input type="radio" name="q11_college" value="cph" /> College of Public Health</label>
+      <label><input type="radio" name="q11_college" value="cos" /> College of Science</label>
+    </div>
+  </div>
+
+  <!-- Sponsorship radio group — profile.requires_sponsorship = "YES" and
+       options are Yes/No, so this one SHOULD resolve to HIGH. -->
+  <div class="office-form-question question-12">
+    <div class="text-format-content question-title-container">
+      <div class="text-format-content">12. Will you now or in the future require immigration sponsorship?</div>
+    </div>
+    <div class="question-input" role="radiogroup">
+      <label><input type="radio" name="q12_sponsorship" value="yes" /> Yes</label>
+      <label><input type="radio" name="q12_sponsorship" value="no" /> No</label>
+    </div>
+  </div>
+</body>
+</html>

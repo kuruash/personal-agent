@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>formdetect.js Microsoft Forms fallback harness</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 16px; }
+    pre { background: #f5f5f5; padding: 12px; border-radius: 4px; white-space: pre-wrap; }
+    iframe { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Detection result (Microsoft Forms shape)</h1>
+  <pre id="out">Loading fixture...</pre>
+  <iframe id="frame" src="msforms.html"></iframe>
+  <script src="../formdetect.js"></script>
+  <script>
+    const out = document.getElementById("out");
+    const frame = document.getElementById("frame");
+    frame.addEventListener("load", () => {
+      try {
+        const fields = window.detectFormFields(frame.contentDocument);
+        out.textContent = JSON.stringify(fields, null, 2);
+      } catch (e) {
+        out.textContent = "Error: " + (e?.message ?? e);
+      }
+    });
+  </script>
+</body>
+</html>

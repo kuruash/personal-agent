@@ -23,6 +23,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     return true;
   }
+  if (msg?.type === "FILL_FIELD") {
+    try {
+      // fillField is provided by formdetect.js.
+      const result = (typeof fillField === "function")
+        ? fillField(msg.selector, msg.value ?? "")
+        : { ok: false, error: "formdetect.js not loaded on this page." };
+      sendResponse(result);
+    } catch (e) {
+      sendResponse({ ok: false, error: String(e?.message ?? e) });
+    }
+    return true;
+  }
 });
 
 async function buildContext() {
@@ -50,6 +62,8 @@ async function buildContext() {
     const selection = window.getSelection()?.toString() ?? "";
     const page_text =
       selection.trim().length > 0 ? selection : (document.body?.innerText ?? "");
+    const form_fields =
+      typeof detectFormFields === "function" ? detectFormFields() : null;
     return {
       url,
       title,
@@ -58,6 +72,7 @@ async function buildContext() {
       video_id: null,
       transcript: null,
       email_thread: null,
+      form_fields: form_fields && form_fields.length > 0 ? form_fields : null,
     };
   }
 

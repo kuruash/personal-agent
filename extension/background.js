@@ -22,6 +22,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch((err) => sendResponse({ ok: false, error: String(err?.message ?? err) }));
     return true;
   }
+  if (msg?.type === "FILL_FIELD") {
+    relayFillField(msg.selector, msg.value ?? "")
+      .then(sendResponse)
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message ?? err) }));
+    return true;
+  }
 });
 
 async function handleAsk(question) {
@@ -39,6 +45,7 @@ async function handleAsk(question) {
     video_id: ctx.video_id ?? null,
     transcript: ctx.transcript ?? null,
     email_thread: ctx.email_thread ?? null,
+    form_fields: ctx.form_fields ?? null,
   };
 
   const res = await fetch(SERVER_URL, {
@@ -62,6 +69,12 @@ async function relayInsertDraft(text) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id) return { ok: false, error: "No active tab." };
   return await sendToTab(tab.id, { type: "INSERT_DRAFT", text });
+}
+
+async function relayFillField(selector, value) {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) return { ok: false, error: "No active tab." };
+  return await sendToTab(tab.id, { type: "FILL_FIELD", selector, value });
 }
 
 function sendToTab(tabId, message) {
