@@ -115,10 +115,22 @@ FAST_INTENTS: list[dict[str, Any]] = [
 
 def _match_fast_intent(question: str, ctx: Context) -> dict[str, Any] | None:
     q = (question or "").strip()
+    print(
+        f"[FORM DEBUG] fast-intent check: question={q!r} "
+        f"form_field_count={len(ctx.form_fields) if ctx.form_fields else 0}",
+        flush=True,
+    )
     if not q:
         return None
     for intent in FAST_INTENTS:
-        if not intent["applies"](ctx):
+        applies = intent["applies"](ctx)
+        pat_match = any(pat.match(q) for pat in intent["patterns"])
+        print(
+            f"[FORM DEBUG] fast-intent candidate {intent['name']!r}: "
+            f"applies={applies} pattern_match={pat_match}",
+            flush=True,
+        )
+        if not applies:
             continue
         for pat in intent["patterns"]:
             if pat.match(q):
@@ -163,7 +175,20 @@ async def ask(req: AskRequest) -> dict[str, Any]:
             "has_email_thread": req.context.email_thread is not None,
         },
     )
+    ff = req.context.form_fields
+    print(
+        f"[FORM DEBUG] /ask received: url={req.context.url!r} "
+        f"question={req.question!r} form_field_count={len(ff) if ff else 0}",
+        flush=True,
+    )
+    if ff:
+        print(f"[FORM DEBUG] /ask form_fields sample: {ff[:3]}", flush=True)
     ctx = Context(**req.context.model_dump())
+    print(
+        f"[FORM DEBUG] Context.form_fields length: "
+        f"{len(ctx.form_fields) if ctx.form_fields else 0}",
+        flush=True,
+    )
 
     trace: list[dict[str, Any]] = []
     answer = "Reached tool-call limit without a final answer."

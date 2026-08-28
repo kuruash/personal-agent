@@ -3,7 +3,7 @@
   "name": "Personal Agent (Phase 4)",
   "version": "0.4.0",
   "description": "Adds form-field detection and per-field autofill with explicit confirmation before any write.",
-  "permissions": ["sidePanel", "activeTab", "scripting"],
+  "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
   "host_permissions": ["http://127.0.0.1:8000/*"],
   "background": {
     "service_worker": "background.js",
@@ -15,11 +15,21 @@
   "action": {
     "default_title": "Open Personal Agent panel"
   },
+  "commands": {
+    "fill-current-form": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+F",
+        "mac": "Command+Shift+F"
+      },
+      "description": "Fill the current form using Personal Agent"
+    }
+  },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
       "js": ["gmail.js", "formdetect.js", "content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ]
 }

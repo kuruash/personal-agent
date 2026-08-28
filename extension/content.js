@@ -4,10 +4,38 @@
 // - mail.google.com: attach extracted email_thread via extractGmailThread()
 //   from gmail.js (loaded alongside this script by the manifest).
 
+// Per-frame identification log so we can see, in DevTools, exactly where
+// the visible form controls live when detection returns empty.
+try {
+  console.log(
+    "[FORM DEBUG] frame:",
+    window === window.top ? "TOP" : "CHILD",
+    location.href,
+    "inputs=", document.querySelectorAll("input").length,
+    "textareas=", document.querySelectorAll("textarea").length,
+    "selects=", document.querySelectorAll("select").length
+  );
+} catch (_) {}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "GET_PAGE_CONTEXT") {
+    // GET_PAGE_CONTEXT is a top-frame concern (url / title / page_text /
+    // gmail / youtube). Form fields are gathered separately via
+    // scripting.executeScript across ALL frames — see background.js. This
+    // guard prevents child-frame responses from racing the top-frame one
+    // when the caller doesn't pin a frameId.
+    if (window !== window.top) return false;
     buildContext()
-      .then((ctx) => sendResponse({ ok: true, ...ctx }))
+      .then((ctx) => {
+        try {
+          console.log(
+            "[FORM DEBUG] buildContext form_fields:",
+            ctx?.form_fields?.length ?? 0,
+            ctx?.form_fields
+          );
+        } catch (_) {}
+        sendResponse({ ok: true, ...ctx });
+      })
       .catch((e) => sendResponse({ ok: false, error: String(e?.message ?? e) }));
     return true;
   }

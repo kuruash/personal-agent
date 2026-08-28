@@ -19,134 +19,89 @@ function hideForm() {
   formFields.innerHTML = "";
 }
 
+// Two states only. Server sets `state`: "ready" (has answer) or "unknown"
+// (empty — user needs to type). Choose textarea vs single-line based on
+// answer length or the underlying field type.
+function isMultiline(f) {
+  const t = (f.type || "").toLowerCase();
+  if (t === "textarea") return true;
+  const v = f.value || "";
+  return v.length > 80 || v.includes("\n");
+}
+
+function debugBlock(f) {
+  return `
+    <details class="debug">
+      <summary>Details</summary>
+      <div class="debug-body">
+        <div><b>source:</b> ${escapeHtml(f.source || "")}</div>
+        <div><b>selector:</b> <code>${escapeHtml(f.selector || "")}</code></div>
+      </div>
+    </details>
+  `;
+}
+
 function showForm(fields) {
   formFields.innerHTML = "";
   for (const [i, f] of fields.entries()) {
     const row = document.createElement("div");
     row.className = "field-row";
-    const conf = f.confidence || "none";
+    const state = f.state === "ready" ? "ready" : "unknown";
+    row.dataset.state = state;
     const label = f.label || f.selector || `field ${i + 1}`;
-    const source = f.source || "";
     const selectorAttr = escapeAttr(f.selector || "");
-
-    if (conf === "ambiguous" && Array.isArray(f.candidates) && f.candidates.length >= 2) {
-      // Render a radio picker over the candidates instead of a free-text
-      // input — resolving ambiguity should be a pick, not typing.
-      const radios = f.candidates.map((c, ci) => {
-        const cid = `amb-${i}-${ci}`;
-        const cval = c.value ?? "";
-        const cdisplay = cval === "" ? "(unset)" : cval;
-        return `
-          <label class="cand" for="${cid}">
-            <input type="radio" id="${cid}" name="amb-${i}" value="${escapeAttr(cval)}" ${ci === 0 ? "checked" : ""} />
-            <b>${escapeHtml(c.profile_key || "")}</b>
-            <span class="cand-sim">(sim ${c.similarity ?? "?"})</span>
-            — <span class="cand-desc">${escapeHtml(c.description || "")}</span><br />
-            <span class="cand-val">→ ${escapeHtml(cdisplay)}</span>
-          </label>
-        `;
-      }).join("");
-      row.innerHTML = `
-        <div class="lbl">${escapeHtml(label)}</div>
-        <div class="meta">
-          <span class="conf-ambiguous">AMBIGUOUS</span>
-          · ${escapeHtml(source)}
-          · <code>${escapeHtml(f.selector || "")}</code>
-        </div>
-        <div class="candidates" data-selector="${selectorAttr}">
-          ${radios}
-        </div>
-        <div class="actions">
-          <button class="fill-btn">Fill selected</button>
-          <button class="skip-btn">Skip</button>
-        </div>
-        <div class="status"></div>
-      `;
-      const fillBtn = row.querySelector(".fill-btn");
-      const skipBtn = row.querySelector(".skip-btn");
-      const statusEl = row.querySelector(".status");
-      fillBtn.addEventListener("click", async () => {
-        const chosen = row.querySelector(`input[name="amb-${i}"]:checked`);
-        const v = chosen?.value ?? "";
-        if (!v) {
-          statusEl.className = "status err";
-          statusEl.textContent = "Selected candidate has no stored value.";
-          return;
-        }
-        fillBtn.disabled = true;
-        try {
-          const resp = await chrome.runtime.sendMessage({
-            type: "FILL_FIELD",
-            selector: f.selector,
-            value: v,
-          });
-          if (!resp?.ok) throw new Error(resp?.error ?? "Fill failed.");
-          statusEl.className = "status ok";
-          statusEl.textContent = `Filled: ${resp.filled ?? v}`;
-        } catch (e) {
-          statusEl.className = "status err";
-          statusEl.textContent = String(e.message ?? e);
-        } finally {
-          fillBtn.disabled = false;
-        }
-      });
-      skipBtn.addEventListener("click", () => {
-        row.style.opacity = "0.5";
-        fillBtn.disabled = true;
-        skipBtn.disabled = true;
-        statusEl.className = "status";
-        statusEl.textContent = "Skipped.";
-      });
-      formFields.appendChild(row);
-      continue;
-    }
-
-    // Non-ambiguous path (high / medium / low / none): editable text input.
+    const badge = state === "ready"
+      ? `<span class="state-ready">READY</span>`
+      : `<span class="state-unknown">UNKNOWN</span>`;
     const value = f.value ?? "";
-    const needsInput = conf === "none" || conf === "low" || value == null || value === "";
-    const placeholder = needsInput
-      ? "I don't have this — enter a value"
-      : "";
+    const placeholder = state === "unknown" ? "Enter a value" : "";
+    const control = isMultiline(f)
+      ? `<textarea data-selector="${selectorAttr}" rows="4"
+                   placeholder="${escapeAttr(placeholder)}">${escapeHtml(value)}</textarea>`
+      : `<input type="text" data-selector="${selectorAttr}"
+                value="${escapeAttr(value)}"
+                placeholder="${escapeAttr(placeholder)}" />`;
     row.innerHTML = `
       <div class="lbl">${escapeHtml(label)}</div>
-      <div class="meta">
-        <span class="conf-${conf}">${conf.toUpperCase()}</span>
-        · ${escapeHtml(source)}
-        · <code>${escapeHtml(f.selector || "")}</code>
-      </div>
-      <input type="text" data-selector="${selectorAttr}"
-             value="${escapeAttr(value ?? "")}"
-             placeholder="${escapeAttr(placeholder)}" />
+      <div class="meta">${badge}</div>
+      ${control}
       <div class="actions">
         <button class="fill-btn">Fill</button>
         <button class="skip-btn">Skip</button>
       </div>
+      ${debugBlock(f)}
       <div class="status"></div>
     `;
-    const input = row.querySelector("input");
+    // Frame identity: detection ran in a specific frame and returned
+    // f.frameId. Fill MUST be routed back to the same frame or the
+    // selector won't match. Store on the row so both handlers see it.
+    if (typeof f.frameId === "number") row.dataset.frameId = String(f.frameId);
+    const control_el = row.querySelector("input, textarea");
     const fillBtn = row.querySelector(".fill-btn");
     const skipBtn = row.querySelector(".skip-btn");
-    const statusEl = row.querySelector(".status");
+    const rowStatus = row.querySelector(".status");
     fillBtn.addEventListener("click", async () => {
-      const v = input.value;
+      const v = control_el.value;
       if (!v) {
-        statusEl.className = "status err";
-        statusEl.textContent = "Value is empty — nothing to fill.";
+        rowStatus.className = "status err";
+        rowStatus.textContent = "Value is empty — nothing to fill.";
         return;
       }
       fillBtn.disabled = true;
       try {
+        const frameId = row.dataset.frameId ? Number(row.dataset.frameId) : undefined;
         const resp = await chrome.runtime.sendMessage({
           type: "FILL_FIELD",
-          selector: input.dataset.selector,
+          selector: control_el.dataset.selector,
           value: v,
+          frameId,
         });
         if (!resp?.ok) throw new Error(resp?.error ?? "Fill failed.");
-        statusEl.className = "status ok";
-        statusEl.textContent = `Filled: ${resp.filled ?? v}`;
+        rowStatus.className = "status ok";
+        rowStatus.textContent = `Filled: ${(resp.filled ?? v).slice(0, 80)}`;
       } catch (e) {
-        statusEl.className = "status err";
-        statusEl.textContent = String(e.message ?? e);
+        rowStatus.className = "status err";
+        rowStatus.textContent = String(e.message ?? e);
       } finally {
         fillBtn.disabled = false;
       }
@@ -155,12 +110,52 @@ function showForm(fields) {
       row.style.opacity = "0.5";
       fillBtn.disabled = true;
       skipBtn.disabled = true;
-      statusEl.className = "status";
-      statusEl.textContent = "Skipped.";
+      rowStatus.className = "status";
+      rowStatus.textContent = "Skipped.";
     });
     formFields.appendChild(row);
   }
   formArea.style.display = "block";
+  // Auto-fill READY rows. Each row's `data-state="ready"` is set by the
+  // server-side pipeline only after option-fit + phone-format + OBVIOUS
+  // deterministic-or-Qwen-answer validation. We don't re-validate here —
+  // we route the same value through the existing FILL_FIELD path used by
+  // the manual Fill button. No new Ollama calls, no form submission.
+  autoFillReadyRows();
+}
+
+function autoFillReadyRows() {
+  const rows = formFields.querySelectorAll('.field-row[data-state="ready"]');
+  for (const row of rows) {
+    // Skip if the user already Skipped or manually filled this row.
+    if (row.dataset.autofilled === "1") continue;
+    const control = row.querySelector("input, textarea");
+    const fillBtn = row.querySelector(".fill-btn");
+    const rowStatus = row.querySelector(".status");
+    if (!control?.value || !fillBtn || fillBtn.disabled) continue;
+    row.dataset.autofilled = "1";
+    fillBtn.disabled = true;
+    (async () => {
+      try {
+        const frameId = row.dataset.frameId ? Number(row.dataset.frameId) : undefined;
+        const resp = await chrome.runtime.sendMessage({
+          type: "FILL_FIELD",
+          selector: control.dataset.selector,
+          value: control.value,
+          frameId,
+        });
+        if (!resp?.ok) throw new Error(resp?.error ?? "Auto-fill failed.");
+        rowStatus.className = "status ok";
+        rowStatus.textContent = `Auto-filled: ${(resp.filled ?? control.value).slice(0, 80)}`;
+      } catch (e) {
+        rowStatus.className = "status err";
+        rowStatus.textContent = `Auto-fill: ${e.message ?? e}`;
+      } finally {
+        // Re-enable so the user can edit and click Fill to overwrite.
+        fillBtn.disabled = false;
+      }
+    })();
+  }
 }
 
 function escapeHtml(s) {
@@ -248,16 +243,13 @@ rejectBtn.addEventListener("click", () => {
 });
 
 approveAllBtn.addEventListener("click", () => {
-  // "High-confidence" here = the row's meta contains "HIGH" and the input
-  // has a non-empty value. We just simulate clicks on those rows' Fill
-  // buttons — actual writes still go through the same per-field code path,
-  // so each still shows individual success/error status.
-  const rows = formFields.querySelectorAll(".field-row");
+  // "Fill all ready" = only READY rows (see classifyState). GENERATE,
+  // REVIEW, UNKNOWN rows all need an explicit per-row choice from the user.
+  const rows = formFields.querySelectorAll('.field-row[data-state="ready"]');
   for (const row of rows) {
-    const conf = row.querySelector(".meta .conf-high");
-    const input = row.querySelector("input");
+    const input = row.querySelector("input[type=text]");
     const fillBtn = row.querySelector(".fill-btn");
-    if (conf && input?.value && !fillBtn.disabled) {
+    if (input?.value && fillBtn && !fillBtn.disabled) {
       fillBtn.click();
     }
   }
@@ -267,3 +259,27 @@ closeFormBtn.addEventListener("click", () => {
   hideForm();
   statusEl.textContent = "Form preview closed.";
 });
+
+// ---- Cmd/Ctrl+Shift+F entry points ----
+// Background sets a storage flag AND broadcasts RUN_FILL. Either can
+// arrive first depending on whether the panel was already open. The
+// askBtn.disabled guard inside the click handler dedupes if both fire
+// close together, so pressing the shortcut still runs the pipeline
+// exactly once.
+function runFillFromShortcut() {
+  if (askBtn.disabled) return;
+  q.value = "fill this form";
+  askBtn.click();
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type === "RUN_FILL") runFillFromShortcut();
+});
+
+chrome.storage.local.get("pending_fill").then((r) => {
+  const ts = r?.pending_fill;
+  if (ts && Date.now() - ts < 5000) {
+    chrome.storage.local.remove("pending_fill");
+    runFillFromShortcut();
+  }
+}).catch(() => {});

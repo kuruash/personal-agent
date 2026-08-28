@@ -28,20 +28,17 @@
       .field-row { border-top: 1px solid #cfe0ff; padding: 8px 0; }
       .field-row .lbl { font-weight: 600; font-size: 13px; }
       .field-row .meta { font-size: 11px; color: #555; margin-bottom: 4px; }
-      .field-row .conf-high { color: #0a7a2a; }
-      .field-row .conf-medium { color: #a06a00; }
-      .field-row .conf-low { color: #b00020; }
-      .field-row .conf-none { color: #b00020; font-style: italic; }
-      .field-row .conf-ambiguous { color: #8a5a00; font-weight: 700; }
-      .field-row .candidates { margin: 4px 0; }
-      .field-row .cand { display: block; padding: 4px 6px; margin: 2px 0;
-        border: 1px solid #e4c98c; border-radius: 3px; background: #fff8e6;
-        font-size: 12px; cursor: pointer; }
-      .field-row .cand input[type=radio] { margin-right: 6px; }
-      .field-row .cand-sim { color: #555; font-size: 11px; }
-      .field-row .cand-desc { color: #444; font-style: italic; }
-      .field-row .cand-val { color: #333; font-family: ui-monospace, monospace; }
-      .field-row input { width: 100%; box-sizing: border-box; padding: 4px 6px;
+      .field-row .state-ready { color: #0a7a2a; font-weight: 700; }
+      .field-row .state-unknown { color: #b00020; font-style: italic; }
+      .field-row details.debug { margin: 4px 0; }
+      .field-row details.debug summary { cursor: pointer; color: #888;
+        font-size: 11px; }
+      .field-row details.debug .debug-body { font-size: 11px; color: #555;
+        margin-top: 4px; word-break: break-word; }
+      .field-row details.debug code { font-family: ui-monospace, monospace;
+        font-size: 11px; }
+      .field-row input, .field-row textarea {
+        width: 100%; box-sizing: border-box; padding: 4px 6px;
         font: inherit; margin-bottom: 4px; }
       .field-row .actions { display: flex; gap: 6px; }
       .field-row button { padding: 3px 8px; margin-top: 0; font-size: 12px; }
@@ -70,7 +67,7 @@
       </div>
       <div id="form-fields"></div>
       <div id="form-bulk">
-        <button id="approve-all-btn">Fill all high-confidence</button>
+        <button id="approve-all-btn">Fill all ready</button>
         <button id="close-form-btn">Close</button>
       </div>
     </div>

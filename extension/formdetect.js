@@ -17,8 +17,12 @@
 //
 // Load-bearing assumptions (also noted in CLAUDE.md):
 //   - Choice groups: shared `name` attr, or shared fieldset / role=radiogroup
-//     ancestor. Everything else (button-typed inputs, hidden, disabled) is
-//     dropped as before.
+//     ancestor, or (rescue pass) two-or-more choice inputs sharing the
+//     nearest FALLBACK_GROUP_ANCESTOR_SELECTORS ancestor. The rescue pass
+//     is what handles live Microsoft Forms, whose per-question wrappers
+//     have no ARIA role and whose radios each carry a distinct auto-
+//     generated name. Everything else (button-typed inputs, hidden,
+//     disabled) is dropped as before.
 //   - Label association per input: label[for], wrapping label, row-label,
 //     aria-labelledby, then FALLBACK_LABEL_SELECTORS ancestor walk. For
 //     groups: legend, group-level aria attrs, then the same fallback walk.
@@ -43,6 +47,23 @@
     // Microsoft Forms: question rendered in a rich-text div nowhere near
     // the input by DOM standards, only reachable via a shared ancestor.
     '[class*="text-format-content"]',
+  ];
+
+  // Site-specific "everything for ONE question lives in here" containers,
+  // used to group choice inputs (radio/checkbox) that DON'T share a `name`
+  // attribute AND aren't inside a <fieldset> or role="radiogroup". Ordered
+  // by preference. Add one line per new site.
+  //
+  // On live Microsoft Forms the radio/checkbox <input>s inside a single
+  // question each carry their own generated name, and the ancestor wrapper
+  // has no ARIA role — so the standard shared-name / shared-role grouping
+  // paths both miss and each option leaks out as its own field. This
+  // ancestor chain rescues that case.
+  const FALLBACK_GROUP_ANCESTOR_SELECTORS = [
+    '[data-automation-id="questionItem"]',
+    '[data-automation-id*="question"]',
+    '[class*="office-form-question"]',
+    '[class*="question-item"]',
   ];
 
   // Labels that formally exist but tell us nothing about what the field is
@@ -87,6 +108,15 @@
 
       out.push(buildSingleField(el, scope));
     }
+    try {
+      console.log(
+        "[FORM DEBUG] detectFormFields result:",
+        "frame=", (typeof window !== "undefined" && window === window.top) ? "TOP" : "CHILD",
+        "url=", (typeof location !== "undefined" ? location.href : "?"),
+        "count=", out.length,
+        out
+      );
+    } catch (_) {}
     return out;
   }
 
@@ -109,10 +139,22 @@
       current_value: readValue(el),
     };
     if (el.tagName === "SELECT") {
-      field.options = Array.from(el.options).map((o) => ({
-        value: o.value,
-        text: (o.textContent || "").trim(),
-      }));
+      // Normalize into the same {value, text}[] shape radio_group uses.
+      // Filter out disabled options and the "-- select --" style placeholder
+      // (empty value; it's not a real answer, it's a "please pick one" hint).
+      // Keep the placeholder-text option ONLY if it has a non-empty value so
+      // sites that use "prefer_not_say" style empty values still round-trip.
+      field.options = Array.from(el.options)
+        .filter((o) => !o.disabled)
+        .filter((o) => (o.value || "").trim() !== "" ||
+                       !/^(\s|-|—)*(select|choose|pick|please\s*select)(\s|-|—|\.|:)*(one|an option|.*)?\s*$/i
+                         .test((o.textContent || "").trim()))
+        .map((o) => ({
+          value: o.value,
+          text: (o.textContent || "").trim(),
+        }));
+      // Multi-select gets its own type so the resolver can render checkboxes.
+      if (el.multiple) field.type = "select-multiple";
     }
     return field;
   }
@@ -159,6 +201,65 @@
       }
       group.members.push(el);
       groupOf.set(el, group);
+    }
+
+    // Second pass: rescue MS-Forms-style choice inputs that got here as
+    // singletons because they each have their own unique `name` and no
+    // fieldset/radiogroup ancestor. Group by nearest matching per-question
+    // wrapper ancestor.
+    //
+    // We do this AFTER the standard passes so shared-name radios (e.g. a
+    // classic Yes/No radio) always win over ancestor-based collapse.
+    // Nested map: ancestor element → (kind → bucket). Element identity as
+    // outer key sidesteps needing a stringified selector.
+    const byFallbackAncestor = new Map();
+    const fallbackBuckets = [];
+    for (const el of nodes) {
+      if (el.tagName !== "INPUT" || el.disabled) continue;
+      const t = (el.type || "").toLowerCase();
+      if (t !== "radio" && t !== "checkbox") continue;
+      // Already in a real (multi-member) group → leave alone. Singleton
+      // "groups" (size 1) are still eligible for rescue here.
+      const existing = groupOf.get(el);
+      if (existing && existing.members.length >= 2) continue;
+
+      let anc = null;
+      for (const sel of FALLBACK_GROUP_ANCESTOR_SELECTORS) {
+        try { anc = el.closest(sel); } catch { anc = null; }
+        if (anc) break;
+      }
+      if (!anc) continue;
+      let byKind = byFallbackAncestor.get(anc);
+      if (!byKind) {
+        byKind = new Map();
+        byFallbackAncestor.set(anc, byKind);
+      }
+      let bucket = byKind.get(t);
+      if (!bucket) {
+        bucket = { kind: t, ancestor: anc, members: [] };
+        byKind.set(t, bucket);
+        fallbackBuckets.push(bucket);
+      }
+      bucket.members.push(el);
+    }
+    for (const bucket of fallbackBuckets) {
+      if (bucket.members.length < 2) continue;
+      // Detach any prior singleton-group memberships and adopt these members
+      // into a new ancestor-based group.
+      for (const m of bucket.members) {
+        const prior = groupOf.get(m);
+        if (prior) {
+          prior.members = prior.members.filter((x) => x !== m);
+        }
+      }
+      const group = {
+        kind: bucket.kind,
+        name: null,
+        ancestor: bucket.ancestor,
+        members: bucket.members,
+      };
+      groups.push(group);
+      for (const m of group.members) groupOf.set(m, group);
     }
 
     // A "group" of size 1 isn't really a group — let it fall back to

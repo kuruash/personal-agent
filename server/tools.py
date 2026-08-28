@@ -12,20 +12,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-import asyncio
 import json
 import os
+import re
 
 import httpx
 from langfuse import get_client, observe
 
-from .memory import embed
-from .profile import (
-    get_profile_aliases,
-    get_profile_descriptions,
-    get_profile_embeddings,
-    load_profile,
+from .concepts import (
+    build_prompt,
+    match_obvious,
+    obvious_value,
+    parse_response,
 )
+from .profile import load_profile
 
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
@@ -70,35 +70,6 @@ def ollama_perf_metadata(data: dict) -> dict:
         md["eval_tokens_per_sec"] = round(ev_count * 1e9 / ev_dur, 1)
     return md
 
-
-def semantic_form_view(fields: list[dict]) -> list[dict]:
-    """Minimal LLM-facing projection of a detect_form_fields plan.
-
-    Strips selector, tag, aria attrs, and other DOM identifiers — the model
-    only sees the question + available option labels + the mapper's
-    conclusion. Full metadata stays in the panel-facing draft.
-
-    Not currently on the hot path: the fast route and terminal detect flow
-    skip Qwen entirely for form-fill, so this projection is unused today.
-    Kept as the documented shape for any future tool that needs to expose
-    field data back to the model without leaking DOM internals.
-    """
-    out: list[dict] = []
-    for f in fields:
-        item: dict = {
-            "label": f.get("label"),
-            "confidence": f.get("confidence"),
-        }
-        if f.get("profile_key"):
-            item["profile_key"] = f["profile_key"]
-        if f.get("value") is not None:
-            item["proposed_value"] = f["value"]
-        if f.get("options"):
-            item["options"] = [
-                (o.get("text") or o.get("value") or "") for o in f["options"]
-            ]
-        out.append(item)
-    return out
 
 MAX_PAGE_CHARS = 12000
 CHUNK_CHARS = 1500
@@ -177,138 +148,19 @@ async def _read_email_thread(_args: dict, ctx: Context) -> str:
 
 # ---------- form-field mapping ----------
 
-# Similarity bands over cosine(profile-key description, canonical label).
-# Calibrated empirically against extension/fixtures/form.html — see the
-# fixture harness for the raw score distribution.
-SIM_HIGH = 0.72
-SIM_MEDIUM = 0.62
-SIM_LOW = 0.52
-
-# Ambiguity gate: if top match beats runner-up by less than this, the field
-# is AMBIGUOUS and both candidates are surfaced for user choice instead of
-# silently picking one. Same distributional caveats as SIM_HIGH — tune empirically.
-SIM_AMBIG_GAP = 0.06
-
-# Field-type descriptions that formdetect.js could NOT strip because they
-# came in via label/aria in a way the strategy chain accepted. Defense in
-# depth — the same set (case-insensitive) is stripped when normalizing the
-# canonical label here too.
-_GENERIC_LABEL_PHRASES = [
-    "single line text",
-    "enter your answer",
-    "your answer",
-    "type your answer",
-]
-
-
-def _normalize_label(text: str) -> str:
-    """Lowercase, collapse whitespace, and strip generic type-hint phrases.
-
-    Returns "" if nothing usable remains. Callers should treat empty as
-    NO-MATCH.
-    """
-    if not text:
-        return ""
-    s = text.lower().strip()
-    for phrase in _GENERIC_LABEL_PHRASES:
-        s = s.replace(phrase, " ")
-    # Collapse punctuation and whitespace runs into single spaces so
-    # "First name*" and "First name ?" both normalize to "first name".
-    out_chars = []
-    for ch in s:
-        out_chars.append(ch if (ch.isalnum() or ch == " ") else " ")
-    return " ".join("".join(out_chars).split())
-
-
-def _canonical_label(field: dict) -> str:
-    """Return the canonical label text used for matching.
-
-    Uses only the label produced by formdetect.js's winning strategy —
-    NOT a concatenation of label + aria_label + placeholder + name + id.
-    The winning strategy already ran a generic-label reject, so anything
-    label_source != "none" is question text, not type hint. If the fallback
-    chain also failed (label_source == "none"), there is no signal and this
-    returns "".
-    """
-    src = (field.get("label_source") or "").strip().lower()
-    if not src or src == "none":
-        return ""
-    return _normalize_label(field.get("label") or "")
-
-
-def _band(sim: float) -> str:
-    if sim >= SIM_HIGH: return "high"
-    if sim >= SIM_MEDIUM: return "medium"
-    if sim >= SIM_LOW: return "low"
-    return "none"
-
-
-def _alias_hit(label: str, aliases_by_key: dict[str, list[str]]) -> tuple[str, str] | None:
-    """Try exact alias equality first, then whole-word alias-in-label.
-
-    Returns (key, matched_alias) if exactly one profile key hits at the
-    highest available tier, else None. When multiple keys tie we deliberately
-    escalate to the embedding stage rather than picking arbitrarily — that
-    lets the ambiguity gate weigh in.
-    """
-    if not label:
-        return None
-    exact: list[tuple[str, str]] = []
-    for key, aliases in aliases_by_key.items():
-        for a in aliases:
-            if a == label:
-                exact.append((key, a))
-                break
-    # Dedupe by key — multiple aliases exact-matching for the same key still
-    # counts as one hit for that key.
-    keys_exact = {k for k, _ in exact}
-    if len(keys_exact) == 1:
-        return exact[0]
-    if len(keys_exact) > 1:
-        return None  # true tie: hand off to embedding stage
-
-    tokens = label.split()
-    token_set = set(tokens)
-    label_padded = f" {label} "
-    substring: list[tuple[str, str]] = []
-    for key, aliases in aliases_by_key.items():
-        best_alias_for_key: str | None = None
-        for a in aliases:
-            if " " in a:
-                # multi-word alias: phrase must appear contiguously
-                if f" {a} " in label_padded:
-                    if best_alias_for_key is None or len(a) > len(best_alias_for_key):
-                        best_alias_for_key = a
-            else:
-                if a in token_set:
-                    if best_alias_for_key is None or len(a) > len(best_alias_for_key):
-                        best_alias_for_key = a
-        if best_alias_for_key is not None:
-            substring.append((key, best_alias_for_key))
-
-    if len(substring) == 1:
-        return substring[0]
-    # Multiple keys hit at substring level — could still be unambiguous if
-    # one match is strictly longer (more specific). Take the strictly-longest
-    # alias if there's a clear winner; else escalate.
-    if len(substring) > 1:
-        substring.sort(key=lambda kv: len(kv[1]), reverse=True)
-        if len(substring[0][1]) > len(substring[1][1]):
-            return substring[0]
-    return None
-
-
-def _value_fits_options(value: str | None, options: list[dict] | None) -> bool:
+def _value_fits_options(value, options: list[dict] | None) -> bool:
     """Return True iff `value` maps onto at least one option in the list.
 
     Match is case-insensitive and bidirectional-substring: option value OR
     option display text must equal, contain, or be contained in the profile
-    value. This is intentionally forgiving so "YES"/"Yes"/"yes" all fit a
-    "Yes/No" pair, but strict enough that "George Mason University" won't
-    silently pass a college-picker with options like "College of X".
+    value. Booleans are coerced to "yes"/"no" first so a stored
+    `"requires_sponsorship": true` maps onto a Yes/No radio group without
+    forcing the user to write "yes" as a string in their profile.
     """
-    if not options or not value:
+    if not options or value is None:
         return False
+    if isinstance(value, bool):
+        value = "yes" if value else "no"
     v = str(value).strip().lower()
     if not v:
         return False
@@ -324,195 +176,183 @@ def _value_fits_options(value: str | None, options: list[dict] | None) -> bool:
     return False
 
 
-def _none_result(source: str) -> dict:
-    return {"profile_key": None, "value": None, "confidence": "none",
-            "source": source, "similarity": 0.0}
+def _reformat_phone_for_field(value: str, field: dict) -> str | None:
+    """If the field carries an explicit phone-format hint, reformat the raw
+    digits of `value` to match. Returns None when no hint is detected (caller
+    keeps the profile value as-is).
 
+    Hint sources scanned (concatenated, lowercased):
+      - label / aria_label / placeholder text — carries hints like
+        "Format: 703-993-2999" or "e.g. (703) 993-2999".
+      - the input's `pattern` attribute if present.
 
-def _apply_option_guard(result: dict, options: list[dict] | None) -> dict:
-    """If the field has a closed option set, require the picked profile value
-    to fit one of the options. If nothing fits, downgrade to NONE — the
-    question matched a key but the stored answer doesn't apply here.
-
-    Applied AFTER alias/embedding match; upstream unchanged for text/textarea.
+    Recognized shapes:
+      ##########              → 10 raw digits
+      ###-###-####            → dashes
+      (###) ###-####          → parens + space + dash
+      ###.###.####            → dots
     """
-    if not options:
-        return result
-    conf = result.get("confidence")
-    if conf in (None, "none"):
-        return result
-
-    if conf == "ambiguous":
-        cands = result.get("candidates", []) or []
-        fit = [c for c in cands if _value_fits_options(c.get("value"), options)]
-        if not fit:
-            return _none_result(
-                source=(
-                    f"question matched profile keys but no candidate value "
-                    f"fits the field's options "
-                    f"({', '.join(c.get('profile_key','?') for c in cands)})"
-                ),
-            )
-        if len(fit) == 1:
-            c = fit[0]
-            return {
-                "profile_key": c["profile_key"],
-                "value": c["value"],
-                "confidence": "high",
-                "source": (
-                    f"ambiguous disambiguated by option-fit → {c['profile_key']}"
-                    f" (value '{c['value']}' fits an option)"
-                ),
-                "similarity": c.get("similarity"),
-            }
-        # multiple candidates still fit — remain ambiguous but only over fits
-        result["candidates"] = fit
-        return result
-
-    # Single-match path (high/medium/low)
-    v = result.get("value")
-    if not _value_fits_options(v, options):
-        return _none_result(
-            source=(
-                f"question matched profile key '{result.get('profile_key')}' "
-                f"but its value {v!r} is not among the field's options"
-            ),
-        )
-    return result
-
-
-def _hit_result(key: str, profile: dict, confidence: str, source: str,
-                similarity: float | None = None,
-                candidates: list[dict] | None = None) -> dict:
-    value = profile.get(key)
-    result: dict = {
-        "profile_key": key,
-        "value": value,
-        "confidence": confidence,
-        "source": source,
-    }
-    if similarity is not None:
-        result["similarity"] = round(similarity, 3)
-    if candidates is not None:
-        result["candidates"] = candidates
-    if value is None:
-        # Key known but not populated — still surface it (panel will render
-        # an empty input) but downgrade to low so the panel doesn't
-        # auto-fill nothing.
-        result["confidence"] = "low"
-        result["source"] = f"{source} — profile key '{key}' is unset"
-    return result
-
-
-async def _match_field(
-    field: dict,
-    prof_vecs: dict,
-    aliases_by_key: dict[str, list[str]],
-    profile: dict,
-) -> dict:
-    """Three-stage deterministic matcher.
-
-    Stage 1 — canonical-label extraction:
-        pull the winning label from formdetect.js's strategy chain, normalize.
-        empty → NO-MATCH.
-
-    Stage 2 — alias match:
-        exact or whole-word alias hit → HIGH, no embedding needed.
-
-    Stage 3 — embedding match with ambiguity gate:
-        cosine(canonical, description) for every key; if top - runner-up
-        gap < SIM_AMBIG_GAP, return AMBIGUOUS with both candidates; else
-        return the top match bucketed by SIM_HIGH/MEDIUM/LOW.
-    """
-    label = _canonical_label(field)
-    options = field.get("options")
-    if not label:
-        return _none_result("field has no usable label after normalization")
-
-    # Stage 2: alias short-circuit.
-    hit = _alias_hit(label, aliases_by_key)
-    if hit is not None:
-        key, alias = hit
-        result = _hit_result(
-            key, profile, "high",
-            f"alias match: label '{label}' hit '{alias}' → {key}",
-        )
-        return _apply_option_guard(result, options)
-
-    # Stage 3: embedding.
-    fvec = await embed(label)
-    ranked: list[tuple[float, str, str]] = []
-    for key, (desc, kvec) in prof_vecs.items():
-        sim = float(fvec @ kvec)
-        ranked.append((sim, key, desc))
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    top_sim, top_key, top_desc = ranked[0]
-    runner_sim, runner_key, runner_desc = ranked[1] if len(ranked) > 1 else (0.0, "", "")
-
-    if _band(top_sim) == "none":
-        return _none_result(
-            f"no profile key above threshold "
-            f"(top embedding sim={top_sim:.2f} to '{top_desc}' [{top_key}])"
-        )
-
-    gap = top_sim - runner_sim
-    if runner_sim > 0 and gap < SIM_AMBIG_GAP:
-        # Ambiguous — surface both candidates. Confidence is a distinct band
-        # so the panel can render its own picker instead of the default.
-        ambig = {
-            "profile_key": top_key,
-            "value": profile.get(top_key),
-            "confidence": "ambiguous",
-            "source": (
-                f"ambiguous: top={top_sim:.2f} [{top_key}] vs "
-                f"runner={runner_sim:.2f} [{runner_key}] (gap {gap:.2f} < {SIM_AMBIG_GAP})"
-            ),
-            "similarity": round(top_sim, 3),
-            "candidates": [
-                {"profile_key": top_key, "description": top_desc,
-                 "value": profile.get(top_key), "similarity": round(top_sim, 3)},
-                {"profile_key": runner_key, "description": runner_desc,
-                 "value": profile.get(runner_key), "similarity": round(runner_sim, 3)},
-            ],
-        }
-        return _apply_option_guard(ambig, options)
-
-    source = f"embedding sim={top_sim:.2f} to '{top_desc}' [{top_key}]"
-    result = _hit_result(top_key, profile, _band(top_sim), source, similarity=top_sim)
-    return _apply_option_guard(result, options)
+    digits = re.sub(r"\D", "", value)
+    if len(digits) != 10:
+        return None
+    hint = " ".join([
+        str(field.get("label") or ""),
+        str(field.get("aria_label") or ""),
+        str(field.get("placeholder") or ""),
+        str(field.get("pattern") or ""),
+    ]).lower()
+    if not hint.strip():
+        return None
+    # Order matters: check most-specific patterns first.
+    if re.search(r"\(\s*\d{3}\s*\)\s*\d{3}[-\s]\d{4}", hint) or "(###) ###-####" in hint:
+        return f"({digits[0:3]}) {digits[3:6]}-{digits[6:10]}"
+    if re.search(r"\d{3}\.\d{3}\.\d{4}", hint) or "###.###.####" in hint:
+        return f"{digits[0:3]}.{digits[3:6]}.{digits[6:10]}"
+    if re.search(r"\d{3}-\d{3}-\d{4}", hint) or "###-###-####" in hint:
+        return f"{digits[0:3]}-{digits[3:6]}-{digits[6:10]}"
+    if "##########" in hint or re.search(r"10[- ]digit", hint):
+        return digits
+    return None
 
 
 async def _detect_form_fields(_args: dict, ctx: Context) -> str:
+    """Two-path resolution.
+
+    1. OBVIOUS: standard fields (name, email, phone, address, links)
+       resolved directly from the profile by autocomplete token or
+       full-label alias.
+    2. Everything else: ONE Qwen call with the profile as context. Qwen
+       returns the actual answer string per field.
+
+    The panel gets a flat plan of {label, value, state, source}; the user
+    reviews and clicks Fill. Option-fit guard runs on both paths so a
+    right-kind-of-answer-wrong-value still stops before autofill.
+    """
+    print(
+        f"[FORM DEBUG] detect_form_fields tool entered — "
+        f"ctx.form_fields length={len(ctx.form_fields) if ctx.form_fields else 0}",
+        flush=True,
+    )
     if not ctx.form_fields:
         return "No form fields detected on the active tab."
-
-    prof_vecs = await get_profile_embeddings()
-    aliases_by_key = get_profile_aliases()
     profile = load_profile()
+    fields = ctx.form_fields or []
+    plan: list[dict] = [None] * len(fields)  # type: ignore[list-item]
 
-    # Fan out field embeddings — Ollama handles concurrent /api/embeddings
-    # requests fine, and this cuts a 15-field detect call from ~O(N*RTT)
-    # sequential to a single burst. Fields resolved by alias match skip
-    # embedding entirely, so this is usually much less than N calls.
-    mappings = await asyncio.gather(*[
-        _match_field(f, prof_vecs, aliases_by_key, profile) for f in ctx.form_fields
-    ])
+    unresolved: list[dict] = []
+    n_obvious = 0
+    for i, f in enumerate(fields):
+        oid = match_obvious(f.get("label") or "", f.get("autocomplete") or "")
+        if oid is None:
+            unresolved.append({
+                "index": i,
+                "label": f.get("label") or f.get("aria_label") or f.get("placeholder") or f.get("name") or "",
+                "options": [(o.get("text") or o.get("value") or "") for o in (f.get("options") or [])] or None,
+            })
+            continue
 
-    plan = []
-    for f, mapping in zip(ctx.form_fields, mappings):
-        plan.append({
-            "selector": f.get("selector"),
-            "label": f.get("label") or f.get("aria_label") or f.get("placeholder") or f.get("name") or f.get("id"),
-            "type": f.get("type") or f.get("tag"),
-            "required": f.get("required", False),
-            "current_value": f.get("current_value") or "",
-            "options": f.get("options"),
-            **mapping,
-        })
-    # Return JSON as a string so the model sees structured data. The panel
-    # parses this out of the tool trace when rendering the field-by-field
-    # preview.
-    return json.dumps({"fields": plan}, indent=2)
+        raw = obvious_value(oid, profile)
+        if raw is None:
+            plan[i] = _plan_entry(f, "", f"obvious:{oid} — profile value is null", "unknown")
+            n_obvious += 1
+            continue
+
+        v = "yes" if raw is True else "no" if raw is False else str(raw)
+        if oid == "phone":
+            fmt = _reformat_phone_for_field(v, f)
+            if fmt:
+                v = fmt
+        options = f.get("options")
+        if options and not _value_fits_options(v, options):
+            plan[i] = _plan_entry(
+                f, "", f"obvious:{oid} but value {v!r} did not fit options", "unknown"
+            )
+        else:
+            plan[i] = _plan_entry(f, v, f"obvious:{oid}", "ready")
+        n_obvious += 1
+
+    if unresolved:
+        lf = get_client()
+        with lf.start_as_current_observation(
+            name="form.qwen_autofill",
+            as_type="span",
+            input={"unresolved_field_count": len(unresolved)},
+            metadata={"total_fields": len(fields), "obvious": n_obvious},
+        ) as parse_span:
+            prompt = build_prompt(unresolved, profile)
+            model_text = await _ollama_json(prompt)
+            answers = parse_response(model_text, [u["index"] for u in unresolved])
+            for u in unresolved:
+                idx = u["index"]
+                v = answers.get(idx, "")
+                f = fields[idx]
+                options = f.get("options")
+                if not v:
+                    plan[idx] = _plan_entry(f, "", "qwen: no answer from profile", "unknown")
+                elif options and not _value_fits_options(v, options):
+                    plan[idx] = _plan_entry(
+                        f, "", f"qwen answered {v!r} but did not fit options", "unknown"
+                    )
+                else:
+                    plan[idx] = _plan_entry(f, v, "qwen", "ready")
+            parse_span.update(
+                output={"answers": {u["index"]: answers.get(u["index"], "") for u in unresolved}},
+            )
+
+    return json.dumps({
+        "fields": plan,
+        "counts": {
+            "total": len(fields),
+            "obvious": n_obvious,
+            "qwen": len(unresolved),
+        },
+    }, indent=2)
+
+
+def _plan_entry(field: dict, value: str, source: str, state: str) -> dict:
+    return {
+        "selector": field.get("selector"),
+        "label": field.get("label") or field.get("aria_label") or field.get("placeholder") or field.get("name") or field.get("id"),
+        "type": field.get("type") or field.get("tag"),
+        "required": field.get("required", False),
+        "current_value": field.get("current_value") or "",
+        "options": field.get("options"),
+        "value": value,
+        "state": state,   # "ready" | "unknown"
+        "source": source,
+    }
+
+
+@observe(as_type="generation", name="ollama.generate.json", capture_input=False, capture_output=False)
+async def _ollama_json(prompt: str) -> str:
+    """One-shot /api/generate call with format=json for the batched
+    concept-mapping stage. Kept separate from _ollama_generate so the
+    generation-span metadata reflects this specific call site."""
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        r = await client.post(
+            OLLAMA_URL,
+            json={
+                "model": MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "keep_alive": OLLAMA_KEEP_ALIVE,
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+    text = data.get("response", "")
+    get_client().update_current_generation(
+        model=MODEL,
+        input=prompt,
+        output=text,
+        usage_details={
+            "input": data.get("prompt_eval_count", 0),
+            "output": data.get("eval_count", 0),
+        },
+        metadata=ollama_perf_metadata(data),
+    )
+    return text
 
 
 async def _fill_form_field(args: dict, ctx: Context) -> str:
