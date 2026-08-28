@@ -22,7 +22,9 @@ from langfuse import get_client, observe
 
 DB_PATH = Path(__file__).parent / "memory.db"
 EMBED_MODEL = "nomic-embed-text"
-OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embeddings"
+OLLAMA_EMBED_URL = os.environ.get(
+    "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
+).rstrip("/") + "/api/embeddings"
 
 # Same env var as server/tools.py — read here separately so this module has
 # no cross-module dependency on tools.py (would be a cycle: tools -> memory).

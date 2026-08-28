@@ -1,0 +1,216 @@
+# Personal Agent + self-hosted Langfuse v3.
+#
+# One-command startup:  ./dev.sh          (or: docker compose up -d)
+# Shutdown:             ./dev-stop.sh     (or: docker compose down)
+#
+# Ollama stays NATIVE on the host (Apple Metal acceleration on macOS).
+# The personal-agent container reaches host-native Ollama via
+# host.docker.internal — see the OLLAMA_BASE_URL environment override
+# for the personal-agent service.
+#
+# Persistent state lives in named volumes (postgres, clickhouse, minio)
+# plus a bind mount of ./server so that memory.db and profile.json
+# survive container rebuilds and are hand-editable on the host.
+
+name: personal-agent
+
+# Shared Langfuse env — web and worker both need the same connection
+# strings. Anchored here once and reused via YAML merge.
+x-langfuse-env: &langfuse-env
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+  DIRECT_URL:   postgresql://postgres:postgres@postgres:5432/postgres
+  SALT:                     ${LANGFUSE_SALT:?set LANGFUSE_SALT in .env}
+  ENCRYPTION_KEY:           ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY in .env}
+  NEXTAUTH_SECRET:          ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET in .env}
+  NEXTAUTH_URL:             http://localhost:3000
+  TELEMETRY_ENABLED:        "false"
+  LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+
+  CLICKHOUSE_URL:            http://clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL:  clickhouse://clickhouse:9000
+  CLICKHOUSE_USER:           clickhouse
+  CLICKHOUSE_PASSWORD:       clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_AUTH: myredissecret
+
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET:            langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION:            auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID:     minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT:          http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE:  "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX:            "events/"
+
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET:            langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION:            auto
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID:     minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT:          http://minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE:  "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX:            "media/"
+
+  # First-boot bootstrap. These vars auto-create an org + project + user
+  # + API keys on the very first `docker compose up`. On subsequent
+  # boots they have no effect, so it's safe to leave them set.
+  LANGFUSE_INIT_ORG_ID:                ${LANGFUSE_INIT_ORG_ID:-default}
+  LANGFUSE_INIT_ORG_NAME:              ${LANGFUSE_INIT_ORG_NAME:-Local}
+  LANGFUSE_INIT_PROJECT_ID:            ${LANGFUSE_INIT_PROJECT_ID:-default}
+  LANGFUSE_INIT_PROJECT_NAME:          ${LANGFUSE_INIT_PROJECT_NAME:-personal-agent}
+  LANGFUSE_INIT_PROJECT_PUBLIC_KEY:    ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set in .env}
+  LANGFUSE_INIT_PROJECT_SECRET_KEY:    ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set in .env}
+  LANGFUSE_INIT_USER_EMAIL:            ${LANGFUSE_INIT_USER_EMAIL:-dev@localhost}
+  LANGFUSE_INIT_USER_NAME:             ${LANGFUSE_INIT_USER_NAME:-Dev}
+  LANGFUSE_INIT_USER_PASSWORD:         ${LANGFUSE_INIT_USER_PASSWORD:?set in .env}
+
+x-langfuse-depends: &langfuse-depends
+  postgres:   { condition: service_healthy }
+  clickhouse: { condition: service_healthy }
+  redis:      { condition: service_healthy }
+  minio:      { condition: service_healthy }
+
+services:
+  # ── Personal Agent FastAPI server ───────────────────────────────────
+  personal-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: personal-agent
+    ports:
+      # Bind to 127.0.0.1 only — extension talks to the loopback address,
+      # and we don't want the port exposed on the LAN.
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Reach host-native Ollama. host.docker.internal is provided by
+      # extra_hosts below for Linux; on Docker Desktop (mac/win) it
+      # resolves automatically.
+      OLLAMA_BASE_URL:    ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_KEEP_ALIVE:  ${OLLAMA_KEEP_ALIVE:-30m}
+      # Traces go container-to-container over the Docker network.
+      LANGFUSE_BASE_URL:  http://langfuse-web:3000
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set in .env}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set in .env}
+    volumes:
+      # Bind-mount the whole server directory. This is the source of
+      # truth for code hot-reload, profile.json edits, and memory.db
+      # persistence.
+      - ./server:/app/server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      langfuse-web:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  # ── Langfuse web (UI + ingest API) ──────────────────────────────────
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: personal-agent-langfuse-web
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: *langfuse-depends
+    environment: *langfuse-env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL",
+             "wget --quiet --tries=1 --spider http://localhost:3000/api/public/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ── Langfuse worker (batch ingestion, evals) ────────────────────────
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: personal-agent-langfuse-worker
+    depends_on: *langfuse-depends
+    environment: *langfuse-env
+    restart: unless-stopped
+
+  # ── Postgres (Langfuse relational store) ────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: personal-agent-postgres
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       postgres
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── ClickHouse (Langfuse observability store) ───────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: personal-agent-clickhouse
+    environment:
+      CLICKHOUSE_DB:       default
+      CLICKHOUSE_USER:     clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - clickhouse-logs:/var/log/clickhouse-server
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL",
+             "wget --quiet --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Redis (Langfuse queue + cache) ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: personal-agent-redis
+    command: ["redis-server", "--requirepass", "myredissecret"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ── MinIO (S3-compatible event/media storage for Langfuse) ─────────
+  # Console at http://localhost:9001. Langfuse auto-creates the bucket
+  # on first write; if that fails, create bucket "langfuse" manually via
+  # the console (login: minio / miniosecret).
+  minio:
+    image: minio/minio
+    container_name: personal-agent-minio
+    ports:
+      - "127.0.0.1:9001:9001"
+    environment:
+      MINIO_ROOT_USER:     minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL",
+             "curl -fs http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  clickhouse-data:
+  clickhouse-logs:
+  minio-data:

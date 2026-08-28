@@ -1,0 +1,23 @@
+.git/
+.gitignore
+venv/
+__pycache__/
+**/__pycache__/
+**/*.pyc
+
+# Never bake user data or secrets into an image layer.
+server/.env
+server/profile.json
+server/memory.db
+
+# Not needed at runtime.
+extension/
+docs/
+README.md
+CLAUDE.md
+Dockerfile
+compose.yaml
+dev.sh
+dev-stop.sh
+.env
+.env.example

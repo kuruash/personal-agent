@@ -301,57 +301,84 @@ implemented today.
 
 ### Prerequisites
 
-- **Python 3.10+** with `venv` (the project uses a `venv/` at the repo
-  root; `server/requirements.txt` lists deps).
+- **Docker Desktop** running (macOS/Windows) or Docker Engine (Linux).
 - **Ollama** installed natively (macOS: `brew install ollama`).
   Native, not Docker — Metal cannot be passed through to Docker on
-  macOS.
-- **Docker Desktop** — needed only to run Langfuse locally.
+  macOS. `dev.sh` will start Ollama for you if it isn't already
+  running.
 - **Chrome / Chromium** for the extension.
-- A **Langfuse self-hosted deployment** — this repo does not vendor a
-  Docker Compose for it. Clone
-  [`langfuse/langfuse`](https://github.com/langfuse/langfuse) alongside
-  this repo and use its `docker-compose.yml`.
+- (Optional, for native no-Docker workflow) Python 3.10+ with a
+  `venv/` and `server/requirements.txt` installed.
 
-### Startup order
+### One-command startup
 
-Bring the stack up bottom-up. Each service can run in its own terminal.
+```bash
+./dev.sh
+```
 
-1. **Docker Desktop** — start the app.
+`dev.sh` verifies Docker, starts Ollama if needed, pulls `qwen2.5:7b`
+and `nomic-embed-text` if missing, copies `.env.example → .env` on
+first run, and brings the whole stack up:
 
-2. **Langfuse.** In the langfuse repo you cloned:
-   ```bash
-   docker compose up -d
-   ```
-   Reachable at http://localhost:3000. On first run, create a
-   project and copy the public/secret keys into `server/.env`
-   (see [Configuration](#configuration)).
+- FastAPI server:   http://localhost:8000
+- Langfuse UI:      http://localhost:3000
+- MinIO console:    http://localhost:9001  (login `minio` / `miniosecret`)
+- Ollama (native):  http://localhost:11434
 
-3. **Ollama.** In its own terminal:
-   ```bash
-   ollama serve
-   ```
-   Pull the models (once, ever):
-   ```bash
-   ollama pull qwen2.5:7b
-   ollama pull nomic-embed-text
-   ```
+On the very first boot Langfuse auto-provisions an org, project, API
+keys, and user login from `LANGFUSE_INIT_*` in `.env`. Log in at
+http://localhost:3000 with the email/password from `.env`. The API
+keys the personal-agent container uses are also from `.env` — no
+copy-paste required.
 
-4. **Backend.**
-   ```bash
-   # from repo root
-   set -a; source server/.env; set +a
-   venv/bin/uvicorn server.main:app --host 127.0.0.1 --port 8000 --reload
-   ```
-   The server binds `127.0.0.1` only (no external access).
+**Shutdown:**
+```bash
+./dev-stop.sh          # equivalent to: docker compose down
+```
+Volumes (Postgres, ClickHouse, MinIO) and host-side files
+(`server/memory.db`, `server/profile.json`) all persist across
+restarts.
 
-5. **Browser extension.** Load once and reload after edits:
-   - Open `chrome://extensions`
-   - Enable Developer mode
-   - Load unpacked → select the `extension/` directory
-   - Pin the extension; open the side panel from its action button
-   - Optional: rebind the shortcut at `chrome://extensions/shortcuts`
-     (defaults to Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere)
+**Logs:**
+```bash
+docker compose logs -f                     # everything
+docker compose logs -f personal-agent      # FastAPI only
+docker compose logs -f langfuse-web        # Langfuse UI/ingest
+docker compose logs -f langfuse-worker
+docker compose logs -f postgres clickhouse redis minio
+```
+
+**Load the Chrome extension** once, on any development machine:
+- `chrome://extensions`
+- Enable Developer mode
+- Load unpacked → select the `extension/` directory
+- Pin it; open the side panel from its action button
+- Optional: rebind the shortcut at `chrome://extensions/shortcuts`
+  (defaults to Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere)
+
+Code changes to `server/*.py` hot-reload — `uvicorn --reload` watches
+the bind-mounted `./server` directory inside the container. Edits to
+`server/profile.json` are picked up on the next `/ask` request.
+Container image only needs rebuilding when `server/requirements.txt`
+changes:
+
+```bash
+docker compose up -d --build personal-agent
+```
+
+### Native (no-Docker) workflow — optional
+
+Still supported. You need Ollama running natively (`ollama serve`),
+a running Langfuse *somewhere* reachable, and:
+
+```bash
+set -a; source server/.env; set +a
+venv/bin/uvicorn server.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Set `OLLAMA_BASE_URL=http://127.0.0.1:11434` in `server/.env` for the
+native path (the code default already points there, so leaving it
+unset works too).
 
 ### Using the form-fill
 
@@ -366,27 +393,49 @@ Fill. Nothing submits.
 
 ## Configuration
 
-Runtime configuration lives in `server/.env` (not committed).
+Runtime configuration lives in two files, neither committed:
 
-| Variable              | Required | Purpose                                    |
-|-----------------------|----------|--------------------------------------------|
-| `LANGFUSE_PUBLIC_KEY` | yes      | Langfuse project public key                |
-| `LANGFUSE_SECRET_KEY` | yes      | Langfuse project secret key                |
-| `LANGFUSE_BASE_URL`   | no       | Defaults to `http://localhost:3000`        |
-| `OLLAMA_KEEP_ALIVE`   | no       | Ollama model keep-alive (default `30m`)    |
+- **`.env`** (repo root) — used by Docker Compose. `dev.sh` seeds it
+  from `.env.example` on first run.
+- **`server/.env`** (optional) — used only when running the server
+  natively without Docker.
 
-See `server/.env.example` for a template.
+Compose variables (all have working defaults in `.env.example`):
 
-Hardcoded (not env-configurable today; change in code if needed):
-- Ollama URL: `http://127.0.0.1:11434`
-- Model: `qwen2.5:7b` (server/tools.py) and `nomic-embed-text`
-  (server/memory.py)
-- FastAPI bind: `127.0.0.1:8000` (uvicorn CLI)
+| Variable                              | Purpose                                          |
+|---------------------------------------|--------------------------------------------------|
+| `OLLAMA_BASE_URL`                     | Where the FastAPI container reaches Ollama. Default `http://host.docker.internal:11434`. |
+| `OLLAMA_KEEP_ALIVE`                   | Ollama model keep-alive window. Default `30m`.   |
+| `LANGFUSE_INIT_ORG_ID` / `_NAME`      | Org auto-created on Langfuse's first boot.       |
+| `LANGFUSE_INIT_PROJECT_ID` / `_NAME`  | Project auto-created on first boot.              |
+| `LANGFUSE_INIT_PROJECT_PUBLIC_KEY`    | Project keys — the personal-agent container reads these directly, so no post-boot copy-paste. |
+| `LANGFUSE_INIT_PROJECT_SECRET_KEY`    |                                                  |
+| `LANGFUSE_INIT_USER_EMAIL` / `_NAME` / `_PASSWORD` | UI login credentials, auto-created on first boot. |
+| `LANGFUSE_SALT`                       | Langfuse internal secret. Any long random string.|
+| `LANGFUSE_NEXTAUTH_SECRET`            | Langfuse internal secret. Any long random string.|
+| `LANGFUSE_ENCRYPTION_KEY`             | 32-byte hex string. Any value works locally.     |
+
+**How the FastAPI container reaches Ollama.** The container has
+`extra_hosts: host.docker.internal:host-gateway` set in `compose.yaml`
+and reads the URL from `OLLAMA_BASE_URL`. Docker Desktop on macOS
+resolves `host.docker.internal` to the host machine automatically, so
+container-side requests to `http://host.docker.internal:11434` hit the
+native Ollama process.
+
+**How Langfuse tracing is wired.** Inside the container the
+personal-agent process posts traces to `http://langfuse-web:3000` (the
+Docker service name), while your browser still uses
+`http://localhost:3000` for the Langfuse UI. Both hit the same
+Langfuse process.
+
+Hardcoded (not env-configurable; change in code):
+- Model: `qwen2.5:7b` (`server/tools.py`) and `nomic-embed-text`
+  (`server/memory.py`)
+- FastAPI bind port: `8000`
 
 Never put profile PII, Langfuse keys, or API tokens in
-`server/profile.json`. The profile file is checked into the repo and is
-meant to be hand-edited; real deployments should keep it out of
-version control if it holds live data.
+`server/profile.json`. It's meant to be hand-edited and stays out of
+version control.
 
 ---
 
@@ -396,16 +445,22 @@ version control if it holds live data.
 personal-agent/
 ├── README.md
 ├── CLAUDE.md                     # working notes for the AI pair-programmer
+├── compose.yaml                  # personal-agent + Langfuse v3 stack
+├── Dockerfile                    # FastAPI image (Python 3.11, uvicorn --reload)
+├── .dockerignore
+├── dev.sh                        # one-command startup
+├── dev-stop.sh                   # docker compose down (data preserved)
+├── .env.example                  # template for the compose stack .env
 ├── server/
-│   ├── main.py                   # FastAPI app: /ask, fast-intent router, ReAct loop
+│   ├── main.py                   # FastAPI app: /ask, /health, fast-intent router, ReAct loop
 │   ├── tools.py                  # Tool registry: page/PDF, YouTube, Gmail, form-fill
 │   ├── concepts.py               # OBVIOUS registry + one-shot Qwen prompt & parse
 │   ├── profile.py                # Profile loader: load_profile, get_path
-│   ├── profile.json              # ★ user profile — source of truth (hand-edit)
+│   ├── profile.json              # ★ user profile — source of truth (hand-edit; git-ignored)
 │   ├── memory.py                 # SQLite + embeddings for prior-interaction recall
-│   ├── memory.db                 # SQLite database (created on first run)
+│   ├── memory.db                 # SQLite database (created on first run; git-ignored)
 │   ├── requirements.txt          # Python deps
-│   ├── .env.example              # template for local .env (safe to commit)
+│   ├── .env.example              # template for optional native-dev .env
 │   └── .env                      # secrets (NOT committed)
 └── extension/
     ├── manifest.json             # MV3; commands, permissions, content scripts

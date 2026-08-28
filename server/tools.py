@@ -28,7 +28,8 @@ from .concepts import (
 from .profile import load_profile
 
 
-OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_URL = f"{OLLAMA_BASE_URL}/api/generate"
 MODEL = "qwen2.5:7b"
 
 # Keep the model resident between requests so the second /ask in a session

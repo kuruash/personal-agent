@@ -47,7 +47,9 @@ from .tools import (  # noqa: E402
     tool_by_name,
 )
 
-OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
+OLLAMA_CHAT_URL = os.environ.get(
+    "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
+).rstrip("/") + "/api/chat"
 MAX_ITERS = 4
 
 SYSTEM_PROMPT = (
@@ -143,9 +145,14 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 class ContextPayload(BaseModel):
