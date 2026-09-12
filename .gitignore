@@ -7,3 +7,4 @@ session_log.jsonl
 
 CLAUDE.md
 server/memory.db
+server/data/

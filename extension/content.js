@@ -53,9 +53,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg?.type === "FILL_FIELD") {
     try {
-      // fillField is provided by formdetect.js.
+      // fillField is provided by formdetect.js. shadowPath is an
+      // optional array of host selectors describing how to walk into
+      // an open shadow root; empty / missing = light DOM.
       const result = (typeof fillField === "function")
-        ? fillField(msg.selector, msg.value ?? "")
+        ? fillField(msg.selector, msg.value ?? "", Array.isArray(msg.shadowPath) ? msg.shadowPath : [])
         : { ok: false, error: "formdetect.js not loaded on this page." };
       sendResponse(result);
     } catch (e) {
