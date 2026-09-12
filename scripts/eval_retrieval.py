@@ -14,7 +14,7 @@ but doesn't affect pass/fail).
 
 Run against a native Ollama instance:
 
-    venv/bin/python -m scripts.eval_retrieval
+    .venv/bin/python -m scripts.eval_retrieval
 
 Set FORCE_REBUILD=1 to rebuild the Chroma index before running.
 """

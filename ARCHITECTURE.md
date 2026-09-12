@@ -69,8 +69,8 @@ personal-agent/
 │   ├── ask_profile.py                REPL for the profile QA pipeline
 │   └── eval_retrieval.py             vector vs hybrid eval harness
 │
-├── Dockerfile / compose.yaml         FastAPI + Langfuse stack (Ollama stays native)
-├── dev.sh / dev-stop.sh              one-command startup / teardown
+├── Dockerfile / compose.yaml         optional full stack: FastAPI image + Langfuse services
+├── dev-start.sh / dev-stop.sh        lightweight startup / teardown; --full adds observability
 ├── README.md
 └── CLAUDE.md
 ```

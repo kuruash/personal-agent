@@ -21,7 +21,8 @@ import os
 
 import httpx
 import numpy as np
-from langfuse import get_client, observe
+
+from ..observability import get_client, observe
 
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")

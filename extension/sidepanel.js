@@ -21,13 +21,144 @@ const closeFormBtn = document.getElementById("close-form-btn");
 // routing never depends on chrome.tabs.query — that query returns
 // nothing when the side panel itself is focused.
 let formSessionTabId = null;
+let formFillStats = null;
+let requestInFlight = false;
+
+function setRequestInFlight(active) {
+  requestInFlight = active;
+  askBtn.disabled = active;
+  document.body.classList.toggle("is-loading", active);
+}
+
+function resetFormFillStats() {
+  formFillStats = {
+    autoTotal: 0,
+    autoFilled: 0,
+    autoFailed: 0,
+    reviewTotal: 0,
+    streamDone: false,
+  };
+}
+
+function isAutoFillCandidate(f) {
+  return f?.state === "ready"
+    && f?.requires_review === false
+    && f?.confidence === "high"
+    && !!String(f?.value ?? "").trim();
+}
+
+function shouldShowForReview(f) {
+  return !isAutoFillCandidate(f);
+}
+
+function reviewSummaryText() {
+  if (!formFillStats) return "";
+  const filled = formFillStats.autoFilled;
+  const failed = formFillStats.autoFailed;
+  const review = formFillStats.reviewTotal + failed;
+  const pending = Math.max(0, formFillStats.autoTotal - filled - failed);
+  if (pending > 0) {
+    return `Filling ${formFillStats.autoTotal} confident field(s) automatically. ${review} field(s) need review.`;
+  }
+  if (failed > 0) {
+    return `Filled ${filled} field(s) automatically. ${review} field(s) need review.`;
+  }
+  if (review === 0) {
+    return `Filled ${filled} field(s) automatically. No review needed.`;
+  }
+  return `Filled ${filled} field(s) automatically. ${review} field(s) need review.`;
+}
+
+function updateReviewSummary() {
+  const text = reviewSummaryText();
+  if (text) setAnswerMessage(text);
+}
+
+function autoFillPendingCount() {
+  if (!formFillStats) return 0;
+  return Math.max(0, formFillStats.autoTotal - formFillStats.autoFilled - formFillStats.autoFailed);
+}
+
+function finishFormRequestIfSettled() {
+  if (formFillStats?.streamDone && autoFillPendingCount() === 0) {
+    setRequestInFlight(false);
+  }
+}
+
+function setAnswerMessage(text, kind = "assistant") {
+  const safeText = text ?? "";
+  const label = kind === "error" ? "Personal Agent" : "Personal Agent";
+  answerEl.className = kind === "error" ? "message-list has-error" : "message-list";
+  if (kind === "loading") {
+    answerEl.innerHTML = `
+      <div class="loading-message">
+        <span class="loading-dot" aria-hidden="true"></span>
+        <span>${escapeHtml(safeText)}</span>
+      </div>
+    `;
+    return;
+  }
+  if (kind === "error") {
+    answerEl.innerHTML = `
+      <div class="error-message">
+        <div class="error-title">${escapeHtml(safeText)}</div>
+        <div class="error-detail">Try refreshing the page and opening Personal Agent again.</div>
+      </div>
+    `;
+    return;
+  }
+  answerEl.innerHTML = `
+    <div class="assistant-message">
+      <div class="assistant-label">${escapeHtml(label)}</div>
+      <div>${escapeHtml(safeText)}</div>
+    </div>
+  `;
+}
+
+function userFacingError(error) {
+  const msg = String(error?.message ?? error ?? "");
+  if (/Could not establish connection|Receiving end does not exist|could not access this page/i.test(msg)) {
+    return "Couldn't connect to this page.";
+  }
+  if (/No active tab/i.test(msg)) return "No active page found.";
+  if (/Failed to fetch|NetworkError|fetch/i.test(msg)) return "Couldn't reach the local Personal Agent server.";
+  return "Something went wrong.";
+}
+
+function resizeComposer() {
+  q.style.height = "auto";
+  q.style.height = `${Math.min(q.scrollHeight, 128)}px`;
+}
 
 function hideForm() {
   formArea.style.display = "none";
   formFields.innerHTML = "";
 }
 
-// Single fill routing path used by both manual Fill and auto-fill.
+// Single fill routing path used by row Fill and the explicit "Fill all ready" action.
+async function sendFillPayload({ frameId, selector, value, shadowPath }) {
+  return await chrome.runtime.sendMessage({
+    type: "FILL_FIELD",
+    tabId: formSessionTabId,
+    frameId,
+    selector,
+    value,
+    shadowPath,
+  });
+}
+
+async function sendFillFromField(f, value) {
+  if (typeof formSessionTabId !== "number") {
+    return { ok: false, error: "Form session tabId missing — press Cmd+Shift+F again." };
+  }
+  return await sendFillPayload({
+    frameId: typeof f.frameId === "number" ? f.frameId : undefined,
+    selector: f.selector,
+    value,
+    shadowPath: Array.isArray(f.shadowPath) ? f.shadowPath : [],
+  });
+}
+
 async function sendFillFromRow(row, controlEl, value) {
   const frameId = row.dataset.frameId ? Number(row.dataset.frameId) : undefined;
   const shadowPath = row.dataset.shadowPath ? JSON.parse(row.dataset.shadowPath) : [];
@@ -42,9 +173,7 @@ async function sendFillFromRow(row, controlEl, value) {
   if (typeof formSessionTabId !== "number") {
     return { ok: false, error: "Form session tabId missing — press Cmd+Shift+F again." };
   }
-  return await chrome.runtime.sendMessage({
-    type: "FILL_FIELD",
-    tabId: formSessionTabId,
+  return await sendFillPayload({
     frameId,
     selector: controlEl.dataset.selector,
     value,
@@ -52,9 +181,7 @@ async function sendFillFromRow(row, controlEl, value) {
   });
 }
 
-// Two states only. Server sets `state`: "ready" (has answer) or "unknown"
-// (empty — user needs to type). Choose textarea vs single-line based on
-// answer length or the underlying field type.
+// Choose textarea vs single-line based on answer length or the underlying field type.
 function isMultiline(f) {
   const t = (f.type || "").toLowerCase();
   if (t === "textarea") return true;
@@ -68,6 +195,7 @@ function debugBlock(f) {
       <summary>Details</summary>
       <div class="debug-body">
         <div><b>source:</b> ${escapeHtml(f.source || "")}</div>
+        <div><b>confidence:</b> ${escapeHtml(f.confidence || "low")}</div>
         <div><b>selector:</b> <code>${escapeHtml(f.selector || "")}</code></div>
       </div>
     </details>
@@ -81,6 +209,12 @@ const STATE_LABEL = {
   generating: `<span class="state-generate">GENERATING…</span>`,
 };
 
+function metaHtml(state, confidence) {
+  const badge = STATE_LABEL[state] || STATE_LABEL.unknown;
+  const conf = confidence ? `<span class="confidence-label">${escapeHtml(confidence)}</span>` : "";
+  return `${badge}${conf}`;
+}
+
 function _placeholder_for(state) {
   if (state === "unknown") return "Enter a value";
   if (state === "retrieving") return "Retrieving evidence…";
@@ -88,18 +222,16 @@ function _placeholder_for(state) {
   return "";
 }
 
-function showForm(fields) {
-  formFields.innerHTML = "";
-  for (const [i, f] of fields.entries()) {
+function createFieldRow(f, fallbackIndex = 0) {
     const row = document.createElement("div");
     row.className = "field-row";
     // "ready" | "unknown" | "retrieving" | "generating"
     const state = f.state && STATE_LABEL[f.state] ? f.state : "unknown";
     row.dataset.state = state;
+    if (f.confidence) row.dataset.confidence = f.confidence;
     if (typeof f.field_id === "number") row.dataset.fieldId = String(f.field_id);
-    const label = f.label || f.selector || `field ${i + 1}`;
+    const label = f.label || f.selector || `field ${fallbackIndex + 1}`;
     const selectorAttr = escapeAttr(f.selector || "");
-    const badge = STATE_LABEL[state];
     const value = f.value ?? "";
     const placeholder = _placeholder_for(state);
     const control = isMultiline(f)
@@ -110,7 +242,7 @@ function showForm(fields) {
                 placeholder="${escapeAttr(placeholder)}" />`;
     row.innerHTML = `
       <div class="lbl">${escapeHtml(label)}</div>
-      <div class="meta">${badge}</div>
+      <div class="meta">${metaHtml(state, f.confidence)}</div>
       ${control}
       <div class="actions">
         <button class="fill-btn">Fill</button>
@@ -153,15 +285,54 @@ function showForm(fields) {
     });
     skipBtn.addEventListener("click", () => {
       row.style.opacity = "0.5";
+      row.dataset.state = "skipped";
       fillBtn.disabled = true;
       skipBtn.disabled = true;
       rowStatus.className = "status";
       rowStatus.textContent = "Skipped.";
     });
+    return row;
+}
+
+function showForm(fields) {
+  formFields.innerHTML = "";
+  for (const [i, f] of fields.entries()) {
+    const row = createFieldRow(f, i);
     formFields.appendChild(row);
   }
+  formArea.style.display = fields.length > 0 ? "block" : "none";
+}
+
+async function autoFillConfidentField(f, alreadyCounted = false) {
+  if (!formFillStats || f.__autoFillAttempted) return;
+  f.__autoFillAttempted = true;
+  if (!alreadyCounted) formFillStats.autoTotal += 1;
+  try {
+    const resp = await sendFillFromField(f, f.value);
+    if (!resp?.ok) throw new Error(resp?.error ?? "Auto-fill failed.");
+    formFillStats.autoFilled += 1;
+    f.status = "filled";
+  } catch (e) {
+    formFillStats.autoFailed += 1;
+    f.status = "failed";
+    f.requires_review = true;
+    f.confidence = "low";
+    console.warn("[SidePanel] Confident auto-fill failed; moved to review:", e?.message ?? e);
+    showOrPatchReviewField(f);
+  } finally {
+    updateReviewSummary();
+    finishFormRequestIfSettled();
+  }
+}
+
+function showOrPatchReviewField(f) {
+  const existing = _rowByFieldId(f.field_id);
+  if (existing) {
+    patchRowFromField(f);
+    return;
+  }
+  formFields.appendChild(createFieldRow(f, formFields.children.length));
   formArea.style.display = "block";
-  autoFillReadyRows();
 }
 
 
@@ -174,7 +345,7 @@ function _rowByFieldId(fid) {
 function _setBadge(row, state) {
   row.dataset.state = state;
   const badgeEl = row.querySelector(".meta");
-  if (badgeEl) badgeEl.innerHTML = STATE_LABEL[state] || STATE_LABEL.unknown;
+  if (badgeEl) badgeEl.innerHTML = metaHtml(state, row.dataset.confidence);
 }
 
 function patchRowFromField(f) {
@@ -182,6 +353,7 @@ function patchRowFromField(f) {
   const row = _rowByFieldId(f.field_id);
   if (!row) return;
   const state = f.state && STATE_LABEL[f.state] ? f.state : "unknown";
+  if (f.confidence) row.dataset.confidence = f.confidence;
   _setBadge(row, state);
   // Update the editable control's value + placeholder.
   const control = row.querySelector("input, textarea");
@@ -200,35 +372,7 @@ function patchRowFromField(f) {
     if (srcLine) srcLine.innerHTML = `<b>source:</b> ${escapeHtml(f.source)}`
       + (typeof f.latency_ms === "number" ? ` <i>(${f.latency_ms.toFixed(0)} ms)</i>` : "");
   }
-  // If a semantic field arrived READY, auto-fill it now (same safety
-  // rules as direct auto-fill: value present, options-fit already
-  // enforced server-side).
-  if (state === "ready" && !row.dataset.autofilled) {
-    autoFillSingleRow(row);
-  }
-}
-
-function autoFillSingleRow(row) {
-  if (row.dataset.autofilled === "1") return;
-  const control = row.querySelector("input, textarea");
-  const fillBtn = row.querySelector(".fill-btn");
-  const rowStatus = row.querySelector(".status");
-  if (!control?.value || !fillBtn || fillBtn.disabled) return;
-  row.dataset.autofilled = "1";
-  fillBtn.disabled = true;
-  (async () => {
-    try {
-      const resp = await sendFillFromRow(row, control, control.value);
-      if (!resp?.ok) throw new Error(resp?.error ?? "Auto-fill failed.");
-      rowStatus.className = "status ok";
-      rowStatus.textContent = `Auto-filled: ${(resp.filled ?? control.value).slice(0, 80)}`;
-    } catch (e) {
-      rowStatus.className = "status err";
-      rowStatus.textContent = `Auto-fill: ${e.message ?? e}`;
-    } finally {
-      fillBtn.disabled = false;
-    }
-  })();
+  if (state === "ready") row.dataset.autofilled = "";
 }
 
 function handleFormStreamEvent(ev) {
@@ -239,15 +383,26 @@ function handleFormStreamEvent(ev) {
     return;
   }
   if (ev.event === "meta") {
-    answerEl.textContent = `Detected ${ev.total_fields} field(s) — filling direct fields immediately, semantic answers to follow.`;
+    resetFormFillStats();
+    setAnswerMessage(`Detected ${ev.total_fields} field(s). Resolving answers...`, "loading");
     return;
   }
   if (ev.event === "phase") {
     if (ev.phase === "direct_done" && Array.isArray(ev.fields)) {
-      // Render all rows now — direct ones are final, semantic ones are placeholders.
-      showForm(ev.fields);
-      const directCount = ev.fields.filter((f) => f && f.state === "ready" && f.route && f.route.startsWith("direct")).length;
-      statusEl.textContent = `Direct fields ready (${directCount}). Semantic fields in progress…`;
+      if (!formFillStats) resetFormFillStats();
+      const reviewFields = ev.fields.filter(shouldShowForReview);
+      const autoFields = ev.fields.filter(isAutoFillCandidate);
+      formFillStats.autoTotal += autoFields.length;
+      formFillStats.reviewTotal = reviewFields.length;
+      if (reviewFields.length > 0) showForm(reviewFields);
+      else hideForm();
+      for (const f of autoFields) {
+        autoFillConfidentField(f, true);
+      }
+      updateReviewSummary();
+      statusEl.textContent = reviewFields.length > 0
+        ? "Review the remaining fields below while analysis finishes."
+        : "No review needed so far. Finishing analysis...";
       return;
     }
     if (ev.phase === "generating" && Array.isArray(ev.field_ids)) {
@@ -261,47 +416,39 @@ function handleFormStreamEvent(ev) {
     }
   }
   if (ev.event === "field") {
-    patchRowFromField(ev);
+    if (isAutoFillCandidate(ev)) {
+      autoFillConfidentField(ev);
+    } else {
+      if (!formFillStats) resetFormFillStats();
+      if (!_rowByFieldId(ev.field_id)) {
+        formFillStats.reviewTotal += 1;
+        showOrPatchReviewField(ev);
+      } else {
+        patchRowFromField(ev);
+      }
+      updateReviewSummary();
+    }
     return;
   }
   if (ev.event === "done") {
     const c = ev.counts || {};
-    statusEl.textContent =
-      `Form fill complete · ready=${c.ready ?? "?"} unknown=${c.unknown ?? "?"} · ${ev.total_ms ?? "?"} ms total`;
+    if (!formFillStats) resetFormFillStats();
+    formFillStats.streamDone = true;
+    const pending = autoFillPendingCount();
+    statusEl.textContent = pending > 0
+      ? `Form analysis complete · ${pending} automatic fill(s) finishing.`
+      : `Form fill complete · ready=${c.ready ?? "?"} unknown=${c.unknown ?? "?"} · ${ev.total_ms ?? "?"} ms total. You can keep asking questions.`;
+    updateReviewSummary();
+    finishFormRequestIfSettled();
     return;
   }
   if (ev.event === "error") {
-    answerEl.textContent = `Error: ${ev.error}`;
+    console.warn("[SidePanel] Form stream error:", ev.error);
+    setAnswerMessage("Couldn't finish form analysis.", "error");
     statusEl.textContent = "";
+    if (formFillStats) formFillStats.streamDone = true;
+    setRequestInFlight(false);
     return;
-  }
-}
-
-function autoFillReadyRows() {
-  const rows = formFields.querySelectorAll('.field-row[data-state="ready"]');
-  for (const row of rows) {
-    // Skip if the user already Skipped or manually filled this row.
-    if (row.dataset.autofilled === "1") continue;
-    const control = row.querySelector("input, textarea");
-    const fillBtn = row.querySelector(".fill-btn");
-    const rowStatus = row.querySelector(".status");
-    if (!control?.value || !fillBtn || fillBtn.disabled) continue;
-    row.dataset.autofilled = "1";
-    fillBtn.disabled = true;
-    (async () => {
-      try {
-        const resp = await sendFillFromRow(row, control, control.value);
-        if (!resp?.ok) throw new Error(resp?.error ?? "Auto-fill failed.");
-        rowStatus.className = "status ok";
-        rowStatus.textContent = `Auto-filled: ${(resp.filled ?? control.value).slice(0, 80)}`;
-      } catch (e) {
-        rowStatus.className = "status err";
-        rowStatus.textContent = `Auto-fill: ${e.message ?? e}`;
-      } finally {
-        // Re-enable so the user can edit and click Fill to overwrite.
-        fillBtn.disabled = false;
-      }
-    })();
   }
 }
 
@@ -329,13 +476,14 @@ function showDraft(body) {
 
 askBtn.addEventListener("click", async () => {
   const question = q.value.trim();
-  if (!question) return;
+  if (!question || requestInFlight) return;
   console.log("[PA DEBUG][SIDEPANEL ASK CLICK]");
-  askBtn.disabled = true;
-  answerEl.textContent = "";
-  statusEl.textContent = "Reading page and asking model...";
+  setRequestInFlight(true);
+  setAnswerMessage("Thinking...", "loading");
+  statusEl.textContent = "Reading page...";
   hideDraft();
   hideForm();
+  let isStreaming = false;
   try {
     console.log("[PA DEBUG][SIDEPANEL SEND ASK]");
     const resp = await chrome.runtime.sendMessage({ type: "ASK", question });
@@ -354,32 +502,40 @@ askBtn.addEventListener("click", async () => {
     ].filter(Boolean).join(" · ");
 
     if (resp.streaming) {
+      isStreaming = true;
       // Progressive form-fill: background is streaming NDJSON via
       // FORM_STREAM_EVENT messages. The event handler drives rendering.
-      answerEl.textContent = "Detecting fields…";
+      setAnswerMessage("Detecting fields...", "loading");
       return;
     }
 
     const draft = resp.draft;
     if (draft?.type === "form_fill" && Array.isArray(draft.fields)) {
-      answerEl.textContent =
-        `Detected ${draft.fields.length} form field(s). Review each below before anything is written.`;
+      setAnswerMessage(`Detected ${draft.fields.length} form field(s). Review each below before anything is written.`);
       showForm(draft.fields);
     } else if (resp.requires_confirmation && (draft?.type === "email" || draft?.body)) {
-      answerEl.textContent =
-        "Drafted a reply. Review below before inserting into Gmail.";
+      setAnswerMessage("Drafted a reply. Review below before inserting into Gmail.");
       showDraft(draft.body);
     } else {
-      answerEl.textContent = resp.answer ?? "(empty response)";
+      setAnswerMessage(resp.answer ?? "(empty response)");
     }
   } catch (e) {
-    console.warn("[PA DEBUG][SIDEPANEL ASK ERROR]", e?.message ?? e);
+    console.warn("[SidePanel] Ask failed:", e);
     statusEl.textContent = "";
-    answerEl.textContent = `Error: ${e.message ?? e}`;
+    setAnswerMessage(userFacingError(e), "error");
   } finally {
-    askBtn.disabled = false;
+    if (!isStreaming) setRequestInFlight(false);
   }
 });
+
+q.addEventListener("input", resizeComposer);
+q.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    if (!askBtn.disabled) askBtn.click();
+  }
+});
+resizeComposer();
 
 insertBtn.addEventListener("click", async () => {
   insertBtn.disabled = true;
@@ -407,11 +563,11 @@ rejectBtn.addEventListener("click", () => {
 });
 
 approveAllBtn.addEventListener("click", () => {
-  // "Fill all ready" = only READY rows (see classifyState). GENERATE,
-  // REVIEW, UNKNOWN rows all need an explicit per-row choice from the user.
+  // "Fill reviewed" = explicit user action on READY review rows only.
+  // UNKNOWN rows still need a user-entered value before a row Fill can write.
   const rows = formFields.querySelectorAll('.field-row[data-state="ready"]');
   for (const row of rows) {
-    const input = row.querySelector("input[type=text]");
+    const input = row.querySelector("input, textarea");
     const fillBtn = row.querySelector(".fill-btn");
     if (input?.value && fillBtn && !fillBtn.disabled) {
       fillBtn.click();
@@ -431,8 +587,9 @@ closeFormBtn.addEventListener("click", () => {
 // close together, so pressing the shortcut still runs the pipeline
 // exactly once.
 function runFillFromShortcut() {
-  if (askBtn.disabled) return;
+  if (requestInFlight) return;
   q.value = "fill this form";
+  resizeComposer();
   askBtn.click();
 }
 

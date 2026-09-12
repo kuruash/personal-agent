@@ -1,3 +1,8 @@
+if (globalThis.__PA_CONTENT_SCRIPT_LOADED__) {
+  console.log("[ContentScript] Already loaded:", location.href);
+} else {
+  globalThis.__PA_CONTENT_SCRIPT_LOADED__ = true;
+
 // Content script: on request, return a context bundle for the active tab.
 // - Non-YouTube, non-Gmail: selection (if any) or document.body.innerText.
 // - youtube.com/watch: video_id + parsed caption track (see Phase 1).
@@ -8,7 +13,7 @@
 // the visible form controls live when detection returns empty.
 try {
   console.log(
-    "[FORM DEBUG] frame:",
+    "[ContentScript] Loaded:",
     window === window.top ? "TOP" : "CHILD",
     location.href,
     "inputs=", document.querySelectorAll("input").length,
@@ -18,6 +23,14 @@ try {
 } catch (_) {}
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type === "PA_PING") {
+    sendResponse({
+      ok: true,
+      frame: window === window.top ? "top" : "child",
+      url: location.href,
+    });
+    return false;
+  }
   if (msg?.type === "GET_PAGE_CONTEXT") {
     // GET_PAGE_CONTEXT is a top-frame concern (url / title / page_text /
     // gmail / youtube). Form fields are gathered separately via
@@ -176,4 +189,5 @@ function findPlayerResponse() {
     }
   }
   return null;
+}
 }

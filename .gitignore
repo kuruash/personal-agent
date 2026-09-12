@@ -1,6 +1,10 @@
 venv/
+.venv/
+.runtime/
+.DS_Store
 __pycache__/
 *.pyc
+*.log
 profile.json
 session_log.jsonl
 .env

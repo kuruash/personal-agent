@@ -8,6 +8,31 @@ reads `state` to decide badges and `value` to decide auto-fill.
 from __future__ import annotations
 
 
+def review_policy(route: str | None, source: str, state: str) -> dict:
+    """Return browser review metadata derived from answer provenance."""
+    is_ready = state == "ready"
+    is_direct = route in ("direct_value", "direct_boolean")
+    is_deterministic = source.startswith(("direct_value:", "direct_lookup:"))
+    can_auto_fill = is_ready and is_direct and is_deterministic
+    if can_auto_fill:
+        return {
+            "confidence": "high",
+            "requires_review": False,
+            "status": "confident",
+        }
+    if is_ready:
+        return {
+            "confidence": "medium",
+            "requires_review": True,
+            "status": "review_required",
+        }
+    return {
+        "confidence": "low",
+        "requires_review": True,
+        "status": "review_required",
+    }
+
+
 def plan_entry(
     field: dict, value: str, source: str, state: str,
     *,
@@ -41,6 +66,7 @@ def plan_entry(
         "source": source,
         "route": route,
     }
+    entry.update(review_policy(route, source, state))
     if latency_ms is not None:
         entry["latency_ms"] = round(latency_ms, 1)
     return entry

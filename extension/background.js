@@ -6,6 +6,8 @@
 const SERVER_URL = "http://127.0.0.1:8000/ask";
 const SERVER_URL_FORM_STREAM = "http://127.0.0.1:8000/ask/form_stream";
 const FETCH_TIMEOUT_MS = 90_000;
+const CONTENT_SCRIPT_FILES = ["gmail.js", "formdetect.js", "content.js"];
+const RECEIVING_END_ERROR = "Could not establish connection. Receiving end does not exist.";
 
 // Same shape as the server-side fast-intent regex. If the question and
 // context both match, we go through the streaming form-fill endpoint
@@ -92,11 +94,18 @@ async function handleAsk(question) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   console.log("[PA DEBUG][HANDLE ASK] tab=", tab?.id, "url=", tab?.url);
   if (!tab?.id) throw new Error("No active tab.");
+  if (!isInjectableTab(tab)) {
+    throw new Error("Personal Agent cannot access this page. Open a normal http/https page and try again.");
+  }
 
   // Top-frame context (url, title, page_text, gmail thread, youtube). We
   // pin frameId: 0 because content.js now guards GET_PAGE_CONTEXT to only
   // respond in the top frame.
-  const ctx = await sendToTab(tab.id, { type: "GET_PAGE_CONTEXT" }, { frameId: 0 });
+  const ctx = await sendToTabWithContentScriptRetry(
+    tab,
+    { type: "GET_PAGE_CONTEXT" },
+    { frameId: 0 }
+  );
   console.log("[PA DEBUG][HANDLE ASK] ctx.ok=", ctx?.ok);
   if (!ctx?.ok) throw new Error(ctx?.error ?? "Failed to read page context.");
 
@@ -253,7 +262,10 @@ async function handleAskFormStream({ question, context, tabId, title }) {
 async function relayInsertDraft(text) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.id) return { ok: false, error: "No active tab." };
-  return await sendToTab(tab.id, { type: "INSERT_DRAFT", text });
+  if (!isInjectableTab(tab)) {
+    return { ok: false, error: "Personal Agent cannot access this page." };
+  }
+  return await sendToTabWithContentScriptRetry(tab, { type: "INSERT_DRAFT", text });
 }
 
 async function relayFillField({ tabId, frameId, selector, value, shadowPath }) {
@@ -278,9 +290,13 @@ async function relayFillField({ tabId, frameId, selector, value, shadowPath }) {
   } catch (_) {
     return { ok: false, error: "Application tab was closed." };
   }
+  const tab = await chrome.tabs.get(tabId);
+  if (!isInjectableTab(tab)) {
+    return { ok: false, error: "Personal Agent cannot access this page." };
+  }
   const opts = typeof frameId === "number" ? { frameId } : {};
-  return await sendToTab(
-    tabId,
+  return await sendToTabWithContentScriptRetry(
+    tab,
     { type: "FILL_FIELD", selector, value, shadowPath: shadowPath || [] },
     opts
   );
@@ -351,7 +367,7 @@ async function scanAllFramesOnce(tabId) {
       },
     });
   } catch (e) {
-    console.error(
+    console.warn(
       `[FORM DEBUG][EXECUTE RAW] executeScript THREW — tabId=${tabId} error=`, e
     );
     return [];
@@ -388,6 +404,64 @@ async function scanAllFramesOnce(tabId) {
   }
   console.log("[FORM DEBUG][MERGE] per_frame=", perFrame, "merged=", out.length);
   return out;
+}
+
+function isInjectableTab(tab) {
+  const url = tab?.url || "";
+  return /^(https?|file):/i.test(url);
+}
+
+function isReceivingEndError(err) {
+  return String(err?.message || err || "").includes(RECEIVING_END_ERROR);
+}
+
+function pageAccessError() {
+  return new Error("Personal Agent could not access this page. Refresh the page and try again, or open a normal website page.");
+}
+
+async function ensureContentScripts(tabId) {
+  console.log("[Background] Injecting content scripts into tab:", tabId);
+  await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    files: CONTENT_SCRIPT_FILES,
+  });
+}
+
+async function sendToTabWithContentScriptRetry(tab, message, options) {
+  console.log("[Background] Sending message to tab:", {
+    tabId: tab.id,
+    url: tab.url,
+    title: tab.title,
+    type: message?.type,
+    frameId: options?.frameId,
+  });
+  await ensureTabReceiver(tab, options);
+  return await sendToTab(tab.id, message, options);
+}
+
+async function ensureTabReceiver(tab, options) {
+  try {
+    const ping = await sendToTab(tab.id, { type: "PA_PING" }, options);
+    if (ping?.ok) return ping;
+  } catch (err) {
+    if (!isReceivingEndError(err)) throw err;
+  }
+  try {
+    await ensureContentScripts(tab.id);
+  } catch (injectErr) {
+    console.warn("[Background] Content script injection failed:", injectErr?.message || injectErr);
+    throw pageAccessError();
+  }
+  try {
+    const ping = await sendToTab(tab.id, { type: "PA_PING" }, options);
+    if (ping?.ok) return ping;
+  } catch (retryErr) {
+    if (isReceivingEndError(retryErr)) {
+      throw pageAccessError();
+    }
+    throw retryErr;
+  }
+  throw pageAccessError();
 }
 
 function sendToTab(tabId, message, options) {

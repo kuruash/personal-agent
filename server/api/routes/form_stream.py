@@ -20,8 +20,8 @@ import json
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from langfuse import get_client, observe
 
+from ...observability import get_client, observe
 from ...tools import Context
 from ...workflows.form_answering import answer_form_streaming
 from ..schemas import AskRequest

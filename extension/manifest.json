@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Personal Agent (Phase 4)",
+  "name": "Personal Agent",
   "version": "0.4.0",
-  "description": "Adds form-field detection and per-field autofill with explicit confirmation before any write.",
+  "description": "An AI browser assistant that understands pages, answers questions, and helps fill forms with your approval.",
   "permissions": ["sidePanel", "activeTab", "scripting", "storage"],
   "host_permissions": ["<all_urls>", "http://127.0.0.1:8000/*"],
   "background": {
@@ -13,7 +13,19 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Open Personal Agent panel"
+    "default_title": "Open Personal Agent panel",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   },
   "commands": {
     "fill-current-form": {

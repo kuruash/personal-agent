@@ -13,7 +13,6 @@ Business logic lives in `api/routes/*` and `workflows/form_answering/*`.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import httpx
@@ -23,14 +22,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv(Path(__file__).parent / ".env")
 
-from langfuse import Langfuse  # noqa: E402
-
-Langfuse(
-    public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
-    secret_key=os.environ["LANGFUSE_SECRET_KEY"],
-    host=os.environ.get("LANGFUSE_BASE_URL", "http://localhost:3000"),
-)
-
 from .api.routes import ask as ask_route  # noqa: E402
 from .api.routes import form_stream as form_stream_route  # noqa: E402
 from .api.routes import health as health_route  # noqa: E402
@@ -39,6 +30,9 @@ from .llm.ollama_client import (  # noqa: E402
     OLLAMA_GENERATE_URL,
     OLLAMA_KEEP_ALIVE,
 )
+from .observability import init_langfuse  # noqa: E402
+
+init_langfuse()
 
 
 async def _warmup_ollama() -> None:

@@ -27,9 +27,8 @@ from __future__ import annotations
 import time
 from typing import AsyncIterator
 
-from langfuse import get_client
-
 from ...llm.ollama_client import _ollama_json
+from ...observability import get_client
 from ...retrieval.hybrid import retrieve_hybrid
 from .boolean import answer_direct_boolean
 from .constants import (
@@ -40,7 +39,7 @@ from .constants import (
     _QWEN_NUM_PREDICT_PER_FIELD,
 )
 from .direct import answer_certifications_list, answer_direct_value
-from .models import final_counts, plan_entry
+from .models import final_counts, plan_entry, review_policy
 from .prompt_builder import build_batch_prompt, parse_batch_response
 from .router import Route, route_field
 from .semantic import dedupe_by_related
@@ -102,12 +101,14 @@ async def answer_form_streaming(fields: list[dict]) -> AsyncIterator[dict]:
                     p = answer_direct_value(f, extra["concept"])
                 p["field_id"] = idx
                 p["route"] = route.value
+                p.update(review_policy(p["route"], p.get("source") or "", p.get("state") or "unknown"))
                 p["latency_ms"] = round((time.perf_counter() - t_direct) * 1000, 1)
                 plans[idx] = p
             elif route == Route.DIRECT_BOOLEAN:
                 p = answer_direct_boolean(f, extra)
                 p["field_id"] = idx
                 p["route"] = route.value
+                p.update(review_policy(p["route"], p.get("source") or "", p.get("state") or "unknown"))
                 p["latency_ms"] = round((time.perf_counter() - t_direct) * 1000, 1)
                 plans[idx] = p
             elif route in (Route.SEARCH, Route.REASON):

@@ -162,7 +162,7 @@ form.
 
 ## Profile System
 
-**Source of truth:** `server/profile.json`.
+**Source of truth:** `server/domain/profile/profile.json`.
 
 **Loader:** `server/profile.py` — one small module. Two functions:
 `load_profile()` reads the JSON, and `get_path(profile, "dotted.path")`
@@ -207,7 +207,7 @@ free-response. Never substitutes a similar value.
 
 **Adding a new profile field.** Two steps:
 
-1. Add the value to `server/profile.json` under the appropriate
+1. Add the value to `server/domain/profile/profile.json` under the appropriate
    section.
 2. If the field is one that appears on nearly every form and has an
    unambiguous label (name, email, phone, …), add an entry to the
@@ -297,53 +297,96 @@ implemented today.
 
 ---
 
-## Local Development
+## Quick Start
 
-### Prerequisites
-
-- **Docker Desktop** running (macOS/Windows) or Docker Engine (Linux).
-- **Ollama** installed natively (macOS: `brew install ollama`).
-  Native, not Docker — Metal cannot be passed through to Docker on
-  macOS. `dev.sh` will start Ollama for you if it isn't already
-  running.
-- **Chrome / Chromium** for the extension.
-- (Optional, for native no-Docker workflow) Python 3.10+ with a
-  `venv/` and `server/requirements.txt` installed.
-
-### One-command startup
+Normal development starts only the services needed by the Chrome
+extension and answering engine:
 
 ```bash
-./dev.sh
+./dev-start.sh
 ```
 
-`dev.sh` verifies Docker, starts Ollama if needed, pulls `qwen2.5:7b`
-and `nomic-embed-text` if missing, copies `.env.example → .env` on
-first run, and brings the whole stack up:
+This starts or verifies native Ollama, ensures `qwen2.5:7b` and
+`nomic-embed-text` are available, prepares a project-local `.venv/`,
+installs Python dependencies only when `server/requirements.txt`
+changes, and runs FastAPI natively on macOS.
 
-- FastAPI server:   http://localhost:8000
-- Langfuse UI:      http://localhost:3000
-- MinIO console:    http://localhost:9001  (login `minio` / `miniosecret`)
-- Ollama (native):  http://localhost:11434
+- FastAPI: http://localhost:8000
+- Ollama:  http://localhost:11434
 
-On the very first boot Langfuse auto-provisions an org, project, API
-keys, and user login from `LANGFUSE_INIT_*` in `.env`. Log in at
-http://localhost:3000 with the email/password from `.env`. The API
-keys the personal-agent container uses are also from `.env` — no
-copy-paste required.
+Docker Desktop, Colima, Langfuse, MinIO, Postgres, ClickHouse, and
+Redis are not required for this mode.
 
-**Shutdown:**
+### Requirements
+
+Normal development:
+
+- Python 3
+- Ollama
+- Chrome / Chromium
+
+Full development:
+
+- Python 3
+- Ollama
+- Colima
+- Docker CLI / Docker Compose
+
+Docker Desktop is no longer required.
+
+### Full Development Stack
+
+Use full mode when you want local Langfuse tracing and its supporting
+infrastructure:
+
 ```bash
-./dev-stop.sh          # equivalent to: docker compose down
+./dev-start.sh --full
 ```
-Volumes (Postgres, ClickHouse, MinIO) and host-side files
-(`server/memory.db`, `server/profile.json`) all persist across
-restarts.
+
+Full mode keeps Ollama and FastAPI native, starts Colima if no Docker
+daemon is already available, then starts the Docker Compose
+observability services:
+
+- Langfuse UI:   http://localhost:3000
+- MinIO console: http://localhost:9001  (login `minio` / `miniosecret`)
+- Postgres, ClickHouse, Redis
+
+On the very first full boot, Langfuse auto-provisions an org, project,
+API keys, and user login from `LANGFUSE_INIT_*` in `.env`. Log in at
+http://localhost:3000 with the email/password from `.env`.
+
+### Rebuild Containers
+
+Normal startup does not rebuild containers. Rebuild only when needed:
+
+```bash
+./dev-start.sh --full --rebuild
+```
+
+### Stop
+
+Stop lightweight native processes started by this project:
+
+```bash
+./dev-stop.sh
+```
+
+Stop lightweight processes and the full Docker Compose stack:
+
+```bash
+./dev-stop.sh --full
+```
+
+`dev-stop.sh` uses PID files under `.runtime/` and only stops Ollama if
+this project started it. Persistent volumes and host-side files
+(`server/memory.db`, `server/domain/profile/profile.json`) are kept.
 
 **Logs:**
+
 ```bash
-docker compose logs -f                     # everything
-docker compose logs -f personal-agent      # FastAPI only
-docker compose logs -f langfuse-web        # Langfuse UI/ingest
+tail -f .runtime/fastapi.log
+tail -f .runtime/ollama.log
+docker compose logs -f langfuse-web
 docker compose logs -f langfuse-worker
 docker compose logs -f postgres clickhouse redis minio
 ```
@@ -356,29 +399,9 @@ docker compose logs -f postgres clickhouse redis minio
 - Optional: rebind the shortcut at `chrome://extensions/shortcuts`
   (defaults to Cmd+Shift+F on macOS, Ctrl+Shift+F elsewhere)
 
-Code changes to `server/*.py` hot-reload — `uvicorn --reload` watches
-the bind-mounted `./server` directory inside the container. Edits to
-`server/profile.json` are picked up on the next `/ask` request.
-Container image only needs rebuilding when `server/requirements.txt`
-changes:
-
-```bash
-docker compose up -d --build personal-agent
-```
-
-### Native (no-Docker) workflow — optional
-
-Still supported. You need Ollama running natively (`ollama serve`),
-a running Langfuse *somewhere* reachable, and:
-
-```bash
-set -a; source server/.env; set +a
-venv/bin/uvicorn server.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-Set `OLLAMA_BASE_URL=http://127.0.0.1:11434` in `server/.env` for the
-native path (the code default already points there, so leaving it
-unset works too).
+Code changes to `server/*.py` hot-reload through native
+`uvicorn --reload`. Edits to `server/domain/profile/profile.json` are
+picked up on the next `/ask` request.
 
 ### Using the form-fill
 
@@ -395,16 +418,17 @@ Fill. Nothing submits.
 
 Runtime configuration lives in two files, neither committed:
 
-- **`.env`** (repo root) — used by Docker Compose. `dev.sh` seeds it
-  from `.env.example` on first run.
-- **`server/.env`** (optional) — used only when running the server
-  natively without Docker.
+- **`.env`** (repo root) — used by full mode / Docker Compose.
+  `dev-start.sh` seeds it from `.env.example` on first run.
+- **`server/.env`** — optional server defaults. Lightweight mode
+  overrides the important runtime values when it starts FastAPI.
 
 Compose variables (all have working defaults in `.env.example`):
 
 | Variable                              | Purpose                                          |
 |---------------------------------------|--------------------------------------------------|
-| `OLLAMA_BASE_URL`                     | Where the FastAPI container reaches Ollama. Default `http://host.docker.internal:11434`. |
+| `LANGFUSE_ENABLED`                    | `false` for lightweight mode; full mode starts FastAPI with tracing enabled. |
+| `OLLAMA_BASE_URL`                     | Native FastAPI reaches Ollama at `http://127.0.0.1:11434`. |
 | `OLLAMA_KEEP_ALIVE`                   | Ollama model keep-alive window. Default `30m`.   |
 | `LANGFUSE_INIT_ORG_ID` / `_NAME`      | Org auto-created on Langfuse's first boot.       |
 | `LANGFUSE_INIT_PROJECT_ID` / `_NAME`  | Project auto-created on first boot.              |
@@ -415,27 +439,20 @@ Compose variables (all have working defaults in `.env.example`):
 | `LANGFUSE_NEXTAUTH_SECRET`            | Langfuse internal secret. Any long random string.|
 | `LANGFUSE_ENCRYPTION_KEY`             | 32-byte hex string. Any value works locally.     |
 
-**How the FastAPI container reaches Ollama.** The container has
-`extra_hosts: host.docker.internal:host-gateway` set in `compose.yaml`
-and reads the URL from `OLLAMA_BASE_URL`. Docker Desktop on macOS
-resolves `host.docker.internal` to the host machine automatically, so
-container-side requests to `http://host.docker.internal:11434` hit the
-native Ollama process.
-
-**How Langfuse tracing is wired.** Inside the container the
-personal-agent process posts traces to `http://langfuse-web:3000` (the
-Docker service name), while your browser still uses
-`http://localhost:3000` for the Langfuse UI. Both hit the same
-Langfuse process.
+**How Langfuse tracing is wired.** Lightweight mode runs with
+`LANGFUSE_ENABLED=false`; tracing calls become no-ops and the answer
+path keeps working. Full mode starts Langfuse through Compose and runs
+native FastAPI with `LANGFUSE_ENABLED=true` and
+`LANGFUSE_BASE_URL=http://localhost:3000`.
 
 Hardcoded (not env-configurable; change in code):
 - Model: `qwen2.5:7b` (`server/tools.py`) and `nomic-embed-text`
   (`server/memory.py`)
 - FastAPI bind port: `8000`
 
-Never put profile PII, Langfuse keys, or API tokens in
-`server/profile.json`. It's meant to be hand-edited and stays out of
-version control.
+Never put Langfuse keys or API tokens in
+`server/domain/profile/profile.json`. It's meant to be hand-edited and
+stays out of version control.
 
 ---
 
@@ -445,12 +462,12 @@ version control.
 personal-agent/
 ├── README.md
 ├── CLAUDE.md                     # working notes for the AI pair-programmer
-├── compose.yaml                  # personal-agent + Langfuse v3 stack
+├── compose.yaml                  # optional full stack: FastAPI image + Langfuse v3 services
 ├── Dockerfile                    # FastAPI image (Python 3.11, uvicorn --reload)
 ├── .dockerignore
-├── dev.sh                        # one-command startup
-├── dev-stop.sh                   # docker compose down (data preserved)
-├── .env.example                  # template for the compose stack .env
+├── dev-start.sh                  # lightweight default startup; --full adds observability
+├── dev-stop.sh                   # stops project-owned native PIDs; --full stops Compose
+├── .env.example                  # template for local/full-stack env
 ├── server/
 │   ├── main.py                   # FastAPI app: /ask, /health, fast-intent router, ReAct loop
 │   ├── tools.py                  # Tool registry: page/PDF, YouTube, Gmail, form-fill
@@ -460,7 +477,6 @@ personal-agent/
 │   ├── memory.py                 # SQLite + embeddings for prior-interaction recall
 │   ├── memory.db                 # SQLite database (created on first run; git-ignored)
 │   ├── requirements.txt          # Python deps
-│   ├── .env.example              # template for optional native-dev .env
 │   └── .env                      # secrets (NOT committed)
 └── extension/
     ├── manifest.json             # MV3; commands, permissions, content scripts
@@ -468,8 +484,9 @@ personal-agent/
     ├── content.js                # per-frame: GET_PAGE_CONTEXT, FILL_FIELD, INSERT_DRAFT
     ├── formdetect.js             # DOM → field descriptors + fillField writer
     ├── gmail.js                  # Gmail thread extraction + compose insertion
-    ├── sidepanel.html            # panel markup + styles
-    ├── sidepanel.js              # panel logic: render, auto-fill, Fill/Skip
+    ├── sidepanel.html            # panel markup
+    ├── sidepanel.css             # side panel styling
+    ├── sidepanel.js              # panel logic: render, confident auto-fill, review Fill/Skip
     └── fixtures/                 # offline HTML for developing detection heuristics
 ```
 
@@ -492,14 +509,15 @@ personal-agent/
 - Phone-format adapter that respects a field's own format hint.
 - Side panel with READY / UNKNOWN states, editable values, Fill / Skip,
   and Details disclosure.
-- Auto-fill of READY rows on pipeline completion.
+- Auto-fill of high-confidence deterministic rows; uncertain rows stay
+  in the side panel for review.
 - Never-submit guarantee: no code path clicks a submit button or calls
   `form.submit()`.
 - Memory: past-interaction recall via SQLite + `nomic-embed-text`.
 - Gmail: thread extraction, two-pass draft (generate + polish),
   explicit Insert-into-compose confirmation.
 - YouTube: transcript extraction + chunked summarization.
-- Langfuse tracing on `/ask`, tools, and Ollama calls.
+- Optional Langfuse tracing on `/ask`, tools, and Ollama calls in full mode.
 
 ### Planned / next steps
 

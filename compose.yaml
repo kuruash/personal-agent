@@ -1,7 +1,7 @@
 # Personal Agent + self-hosted Langfuse v3.
 #
-# One-command startup:  ./dev.sh          (or: docker compose up -d)
-# Shutdown:             ./dev-stop.sh     (or: docker compose down)
+# Full-stack startup:   ./dev-start.sh --full
+# Shutdown:             ./dev-stop.sh --full
 #
 # Ollama stays NATIVE on the host (Apple Metal acceleration on macOS).
 # The personal-agent container reaches host-native Ollama via
@@ -9,8 +9,8 @@
 # for the personal-agent service.
 #
 # Persistent state lives in named volumes (postgres, clickhouse, minio)
-# plus a bind mount of ./server so that memory.db and profile.json
-# survive container rebuilds and are hand-editable on the host.
+# plus a bind mount of ./server when the optional personal-agent service
+# is started directly through Compose.
 
 name: personal-agent
 
@@ -86,9 +86,10 @@ services:
       # Reach host-native Ollama. host.docker.internal is provided by
       # extra_hosts below for Linux; on Docker Desktop (mac/win) it
       # resolves automatically.
-      OLLAMA_BASE_URL:    ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_BASE_URL:    ${COMPOSE_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       OLLAMA_KEEP_ALIVE:  ${OLLAMA_KEEP_ALIVE:-30m}
       # Traces go container-to-container over the Docker network.
+      LANGFUSE_ENABLED:   "true"
       LANGFUSE_BASE_URL:  http://langfuse-web:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set in .env}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set in .env}

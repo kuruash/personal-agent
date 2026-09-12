@@ -19,7 +19,6 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter
-from langfuse import get_client, observe
 
 from ...llm.ollama_client import (
     MODEL,
@@ -28,6 +27,7 @@ from ...llm.ollama_client import (
     ollama_perf_metadata,
 )
 from ...memory import format_recall_for_prompt, log_interaction, recall
+from ...observability import get_client, observe
 from ...tools import (
     IMPLS,
     TOOLS,

@@ -1,7 +1,7 @@
 """Interactive REPL for the profile QA pipeline.
 
 Usage (from repo root):
-    venv/bin/python -m scripts.ask_profile
+    .venv/bin/python -m scripts.ask_profile
 
 Type a question, hit enter. You'll see:
   - route (DIRECT_VALUE / DIRECT_BOOLEAN / SEARCH / REASON)

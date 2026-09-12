@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from langfuse import get_client, observe
 
 from ..llm.ollama_client import embed
+from ..observability import get_client, observe
 
 
 # server/memory.db — anchor to the top of the server package so the
